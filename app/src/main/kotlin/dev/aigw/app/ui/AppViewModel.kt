@@ -275,6 +275,13 @@ data class AppUiState(
     val autoStart: Boolean = false,
     /** 隐藏多任务：离开应用后从最近任务列表移除。 */
     val hideRecents: Boolean = false,
+    /**
+     * Root 守护的实测状态（null 表示还没查过）。
+     *
+     * 不能靠「点了安装按钮」就认为装好了 —— 必须回读进程与脚本落盘情况，
+     * 否则用户装完仍然一脸茫然（这正是之前的缺陷）。
+     */
+    val rootKeeper: dev.aigw.app.service.RootKeeper.Verify? = null,
     /** 模型开放名单：只对外暴露勾选的模型。 */
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings = dev.aigw.core.gateway.ModelExposureSettings(),
     /** 故障转移与并发配置。 */
@@ -827,10 +834,23 @@ class AppViewModel(
         }
     }
 
+    /** 刷新 Root 守护的实测状态（进页面时调一次，避免每帧起 su 进程）。 */
+    fun refreshRootKeeperState() {
+        viewModelScope.launch {
+            val v = withContext(Dispatchers.IO) {
+                runCatching { dev.aigw.app.service.RootKeeper.verify(app) }.getOrNull()
+            }
+            _state.value = _state.value.copy(rootKeeper = v)
+        }
+    }
+
     /** 卸载 Root 守护。 */
     fun uninstallRootKeeper() = action {
         when (val r = dev.aigw.app.service.RootKeeper.uninstall(app)) {
-            dev.aigw.app.service.RootKeeper.UninstallResult.Done -> "Root 守护已卸载。"
+            dev.aigw.app.service.RootKeeper.UninstallResult.Done -> {
+                refreshRootKeeperState()
+                "Root 守护已卸载。"
+            }
             is dev.aigw.app.service.RootKeeper.UninstallResult.NoRoot -> r.detail
         }
     }

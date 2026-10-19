@@ -43,6 +43,15 @@ class AiGatewayApp : Application() {
         dev.aigw.app.service.HideRecents.install(this) {
             dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(store)
         }
+        // Shizuku / Sui 的 binder 获取：必须在主进程初始化一次。
+        //
+        // Shizuku（APK 形态）靠清单里的 ShizukuProvider 回调 binder；
+        // 而 Sui 是 Magisk 模块（zygisk-sui），它**不走 ContentProvider**，
+        // 必须主动调 Sui.init(packageName) 才会把 binder 递过来。
+        // 不调这一句，pingBinder() 永远是 false —— 表现为「明明授权了却显示未授权」。
+        //
+        // 注意：Sui.init 只能调用一次，且要在任何 Shizuku API 之前完成。
+        dev.aigw.app.service.ShizukuBoost.initBinder(this)
         getSystemService<NotificationManager>()?.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,

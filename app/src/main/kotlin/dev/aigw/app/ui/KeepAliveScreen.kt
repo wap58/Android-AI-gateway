@@ -10,11 +10,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -53,11 +55,17 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.reapplyOverlayIfEnabled()
                 viewModel.refresh()
+                // Root 守护状态要回读，不能只看「按钮点过没有」
+                viewModel.refreshRootKeeperState()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+
+    // 首次进入就查一次 Root 守护状态：ON_RESUME 只在切回时触发，
+    // 冷进入本页不会收到事件，不补这一句状态会一直显示「正在查询」。
+    LaunchedEffect(Unit) { viewModel.refreshRootKeeperState() }
 
     // Shizuku 状态必须响应式：用户在 Shizuku App 里授权/断开会立刻反映到本页。
     // 直接调用 currentState() 拿到的是瞬时值，不会触发重绘。
@@ -207,12 +215,57 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
             Text(
                 text = "守护脚本每 20 秒探活一次 http://127.0.0.1:${state.port}/healthz，连续 2 次无响应就重新拉起网关服务。" +
-                    "兼容 Magisk / KernelSU / APatch 及纯 su 环境。",
+                    "兼容 Magisk / KernelSU / APatch / Sui 及纯 su 环境。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // 实测状态：装没装上、跑没跑起来，必须回读，不能只看按钮点过没有
+            val rk = state.rootKeeper
+            if (rk == null) {
+                Text(
+                    text = "正在查询守护状态…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                RootStatusLine(
+                    label = "守护进程",
+                    ok = rk.processAlive,
+                    text = if (rk.processAlive) "运行中（PID ${rk.pid}）" else "未运行",
+                )
+                RootStatusLine(
+                    label = "探活通道",
+                    ok = rk.probeWorks,
+                    text = if (rk.probeWorks) "可用（返回「${rk.probeOutput}」）"
+                    else "不可用（输出「${rk.probeOutput.ifEmpty { "空" }}」）",
+                )
+                RootStatusLine(
+                    label = "开机目录",
+                    ok = rk.registeredDirs.isNotEmpty(),
+                    text = if (rk.registeredDirs.isEmpty()) "未铺设（无框架或权限不足）"
+                    else rk.registeredDirs.joinToString("、") { it.substringAfterLast('/') },
+                )
+                RootStatusLine(
+                    label = "整体",
+                    ok = rk.ok,
+                    text = if (rk.ok) "已生效（被杀会自动复活）" else "未生效，请看上面哪项没通过",
+                )
+                if (rk.logTail.isNotEmpty()) {
+                    Text(
+                        text = "最近日志：${rk.logTail}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                ChoiceChip("安装 Root 守护", selected = false) { viewModel.installRootKeeper() }
+                ChoiceChip(
+                    if (state.rootKeeper?.ok == true) "重新安装" else "安装 Root 守护",
+                    selected = false,
+                ) { viewModel.installRootKeeper() }
+                ChoiceChip("重新检测", selected = false) { viewModel.refreshRootKeeperState() }
                 ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
             }
         }
@@ -223,7 +276,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 Column(Modifier.weight(1f)) {
                     Text("Shizuku 增强（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = "无需 Root。用 Shizuku 的 adb 身份把系统压制开关一次性调到最有利：" +
+                        text = "无需 Root。用 Shizuku / Sui 的 adb 身份把系统压制开关一次性调到最有利：" +
                             "加入 Doze 白名单（深度睡眠豁免）、standby 提到 active、解除休眠冻结。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -265,7 +318,8 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                         ChoiceChip("请求授权", selected = false) { viewModel.shizukuRequestPermission() }
                     dev.aigw.app.service.ShizukuBoost.State.NotRunning ->
                         Text(
-                            text = "请先在 Shizuku App 里开启无线调试并启动服务，然后回到本页。",
+                            text = "未检测到 Shizuku 或 Sui。Shizuku 需先开启无线调试并启动服务；" +
+                                "Sui 是 Magisk 模块，刷入后重启即可，无需手动启动。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )
@@ -388,5 +442,28 @@ private fun launch(context: Context, intent: Intent, failureMessage: String?): B
             Toast.makeText(context, failureMessage, Toast.LENGTH_SHORT).show()
         }
         false
+    }
+}
+
+/** Root 守护的单行状态：左侧标签、右侧实测结论，不通过时标红。 */
+@Composable
+private fun RootStatusLine(label: String, ok: Boolean, text: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(72.dp),
+        )
+        Text(
+            text = if (ok) "✓ " else "✗ ",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (ok) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.error,
+        )
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+        )
     }
 }
