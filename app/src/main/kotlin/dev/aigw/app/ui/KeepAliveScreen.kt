@@ -7,6 +7,7 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -280,38 +281,49 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     text = if (rk.ok) "已生效（被杀会自动复活）" else "未生效，请看上面哪项没通过",
                 )
                 // 日志只露 3 行：守护每 20 秒一轮，完整日志很快就能把卡片撑很长。
-                // 想看全的走「更多」弹窗，想清掉的走「清除」。
+                // 整块可点，末尾「查看更多」进弹窗看完整的。
                 if (rk.logTail.isNotEmpty()) {
                     val lines = rk.logTail.lines().filter { it.isNotBlank() }
                     val preview = lines.takeLast(3).joinToString("\n")
-                    Text(
-                        text = "最近日志：\n$preview",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 5,
-                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                fullLogText = viewModel.loadFullRootKeeperLog()
+                                showLogDialog = true
+                            },
+                    ) {
+                        Text(
+                            text = "最近日志",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = preview,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = "查看更多",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
 
-            // 两行布局：主操作一行，辅助操作一行。
-            // 四个按钮挤在一行会把文字压成竖排，所以拆开。
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ChoiceChip(
-                        if (state.rootKeeper?.ok == true) "重装" else "安装",
-                        selected = false,
-                    ) { viewModel.installRootKeeper() }
-                    ChoiceChip("自检", selected = false) { viewModel.verifyRootKeeper() }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ChoiceChip("更多", selected = false) {
-                        fullLogText = viewModel.loadFullRootKeeperLog()
-                        showLogDialog = true
-                    }
-                    ChoiceChip("清除", selected = false) { viewModel.clearRootKeeperLog() }
-                    ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
-                }
+            // 四个操作按钮：宽度够就排一行，窄屏自动折行（强制一行会把文字压成竖排）
+            androidx.compose.foundation.layout.FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ChoiceChip(
+                    if (state.rootKeeper?.ok == true) "重装" else "安装",
+                    selected = false,
+                ) { viewModel.installRootKeeper() }
+                ChoiceChip("自检", selected = false) { viewModel.verifyRootKeeper() }
+                ChoiceChip("清除", selected = false) { viewModel.clearRootKeeperLog() }
+                ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
             }
         }
 
