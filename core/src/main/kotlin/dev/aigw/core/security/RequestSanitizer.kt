@@ -63,6 +63,14 @@ class RequestSanitizer(
         "ransomware",
     )
 
+    /**
+     * 允许脱敏的最大 body 字符数。
+     *
+     * 超过就不改（原样放行）：脱敏需要 parse 成 JSON 树再序列化一遍，
+     * 期间同时持有原文、JSON 树、新文本三份，大 body 上峰值可能翻数倍。
+     */
+    private val MAX_SANITIZE_CHARS = 512 * 1024
+
     private val evidenceHistory = ConcurrentLinkedDeque<OutboundEvidence>()
     private val maxEvidenceCount = 50
 
@@ -100,6 +108,9 @@ class RequestSanitizer(
      */
     fun sanitizeOpenAiBody(body: String, model: String, enabled: Boolean): String {
         if (!enabled) return body
+        // 超大请求体直接放行：脱敏要重建整棵 JSON 树，内存峰值约为「原 body + 新 body」，
+        // 大 body 上做这件事风险大于收益（崩溃比被上游误拦严重得多）。
+        if (body.length > MAX_SANITIZE_CHARS) return body
         val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return body
         val messages = obj.arrayOrNull("messages") ?: return body
 
@@ -154,14 +165,13 @@ class RequestSanitizer(
      */
     internal fun obfuscateWord(word: String): String {
         if (word.length <= 1) return word
-        val sb = StringBuilder()
-        for (i in word.indices) {
-            sb.append(word[i])
-            if (i < word.length - 1) {
-                sb.append(ZERO_WIDTH_SPACE)
-            }
-        }
-        return sb.toString()
+        // 只在第一个字符后插一个零宽空格，就足以打断关键词匹配。
+        //
+        // 早先的写法是「每个字符之间都插」，看着更彻底，代价却极大：
+        // 零宽空格在 UTF-8 里占 3 字节，一个 15 字符的 vulnerability 会从 15 字节涨到 57 字节（3.8 倍）。
+        // 合规声明类 system prompt 敏感词密集，整个请求体能膨胀 2.5 倍以上，
+        // 在小内存机型上足以把进程压垮（表现为对话时 App 直接崩溃）。
+        return word.substring(0, 1) + ZERO_WIDTH_SPACE + word.substring(1)
     }
 
     /**

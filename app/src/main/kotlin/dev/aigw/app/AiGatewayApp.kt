@@ -27,6 +27,9 @@ class AiGatewayApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 崩溃现场记录：写到 /sdcard/Download/tyd-crash.txt。
+        // 有些设备（USB 调试打不开、Shizuku 激活不了）崩溃后完全拿不到日志，只能靠它。
+        CrashRecorder.install(this)
         store = EncryptedKeyValueStore(this)
         val created = GatewayEngine(
             store = store,

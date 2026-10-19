@@ -9,17 +9,20 @@ import kotlin.test.assertTrue
 class SecurityProtectionTest {
 
     @Test
-    fun `敏感词内部准确注入零宽空格且保留大小写`() {
+    fun `敏感词注入零宽空格打断匹配且保留大小写`() {
         val sanitizer = RequestSanitizer()
         val word = "exploit"
         val obfuscated = sanitizer.obfuscateWord(word)
-        assertEquals("e\u200Bx\u200Bp\u200Bl\u200Bo\u200Bi\u200Bt", obfuscated)
+        // 只在首字符后插一个零宽空格：足以打断关键词匹配，又不会让体积暴涨
+        // （零宽空格占 3 字节，逐字符注入会让 15 字符的词从 15 字节涨到 57 字节）
+        assertEquals("e\u200Bxploit", obfuscated)
+        assertTrue(obfuscated.length == word.length + 1)
 
         val (sanitized, matches) = sanitizer.sanitizeText("Preventing any Exploit or DoS attack.")
         assertTrue("exploit" in matches)
         assertTrue("DoS" in matches)
-        assertTrue(sanitized.contains("E\u200Bx\u200Bp\u200Bl\u200Bo\u200Bi\u200Bt"))
-        assertTrue(sanitized.contains("D\u200Bo\u200BS"))
+        assertTrue(sanitized.contains("E\u200Bxploit"))
+        assertTrue(sanitized.contains("D\u200BoS"))
     }
 
     @Test
@@ -44,8 +47,8 @@ class SecurityProtectionTest {
         val userContent = messages[1].asJsonObject.get("content").asString
 
         // system 消息被脱敏注入
-        assertTrue(sysContent.contains("e\u200Bx\u200Bp\u200Bl\u200Bo\u200Bi\u200Bt"), "system 消息内敏感词必须被零宽空格打断：$sysContent")
-        assertTrue(sysContent.contains("D\u200Bo\u200BS"))
+        assertTrue(sysContent.contains("e\u200Bxploit"), "system 消息内敏感词必须被零宽空格打断：$sysContent")
+        assertTrue(sysContent.contains("D\u200BoS"))
 
         // user 消息原封不动，未被修改
         assertEquals("Can you explain how an exploit works?", userContent, "user 输入绝不能被修改")
@@ -76,7 +79,7 @@ class SecurityProtectionTest {
 
         val (sanitized, matches) = sanitizer.sanitizeText("this has custombadword1 inside")
         assertTrue("customBadWord1" in matches)
-        assertTrue(sanitized.contains("c\u200Bu\u200Bs\u200Bt\u200Bo\u200Bm"))
+        assertTrue(sanitized.contains("c\u200Bustombadword1"))
     }
 
     @Test

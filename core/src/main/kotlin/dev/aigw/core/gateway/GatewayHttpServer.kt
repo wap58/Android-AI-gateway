@@ -71,9 +71,13 @@ class GatewayHttpServer(
                     errorResponse(404, "not_found", "未知路径：$uri")
                 }
             }
-        } catch (e: Exception) {
-            engine.logError("处理 $uri 失败：${e.message}")
-            errorResponse(500, "internal_error", e.message ?: "网关内部错误")
+        } catch (e: Throwable) {
+            // 用 Throwable 而不是 Exception：脱敏等路径上可能出现
+            // OutOfMemoryError / StackOverflowError，它们是 Error 不是 Exception，
+            // 用 Exception 接不住，结果就是整个进程被打崩、连日志都留不下。
+            engine.logError("处理 $uri 失败：${e.javaClass.simpleName}: ${e.message}")
+            runCatching { errorResponse(500, "internal_error", e.message ?: "网关内部错误") }
+                .getOrElse { NanoHTTPD.newFixedLengthResponse(SimpleStatus(500, "Error"), "text/plain", "internal error") }
         }
         return response.withCors()
     }
