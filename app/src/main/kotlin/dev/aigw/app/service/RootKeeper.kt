@@ -65,6 +65,8 @@ object RootKeeper {
         val probeOutput: String,
         /** 已登记的框架开机目录。 */
         val registeredDirs: List<String>,
+        /** 识别到的 Root 方案（Magisk / KernelSU-Sukisu / APatch / 纯 su）。 */
+        val rootFlavor: String = "未知",
         /** 日志尾部（无日志时为空）。 */
         val logTail: String,
     ) {
@@ -96,8 +98,11 @@ object RootKeeper {
         val alreadyRunning = findPid().isNotEmpty()
 
         // 铺进各框架的 service.d（存在则写，不存在就跳过，不报错）
+        val dirs = serviceDirs()
+        // 先清掉上一版「四个目录全写」留下的副本，避免多个守护进程互相抢
+        cleanupStrayDirs(dirs)
         val installedDirs = mutableListOf<String>()
-        for (dir in candidateDirs()) {
+        for (dir in dirs) {
             val target = File(dir, SCRIPT_NAME)
             if (runRoot("mkdir -p '$dir' && cp '${local.absolutePath}' '$target' && chmod 755 '$target'")) {
                 installedDirs += dir
@@ -135,9 +140,11 @@ object RootKeeper {
         if (!hasRoot()) return UninstallResult.NoRoot("未获取到 root")
         val pid = findPid()
         if (pid.isNotEmpty()) runRoot("kill $pid")
-        for (dir in candidateDirs()) {
+        for (dir in serviceDirs()) {
             runRoot("rm -f '$dir/$SCRIPT_NAME'")
         }
+        // 顺带清掉可能残留在其它框架目录里的副本
+        cleanupStrayDirs(emptyList())
         File(context.filesDir, "rootkeep/$SCRIPT_NAME").delete()
         markerFile(context).delete()
         return UninstallResult.Done
@@ -170,7 +177,7 @@ object RootKeeper {
         )
         // curl 返回 "ok"，wget 同样；探测工具缺失则输出 NO_PROBE_TOOL
         val probeWorks = probeOut.isNotBlank() && probeOut != "NO_PROBE_TOOL"
-        val dirs = candidateDirs().filter { dir ->
+        val dirs = serviceDirs().filter { dir ->
             runRootOutput("[ -f '$dir/$SCRIPT_NAME' ] && echo yes").trim() == "yes"
         }
         return Verify(
@@ -179,6 +186,7 @@ object RootKeeper {
             probeWorks = probeWorks,
             probeOutput = probeOut.trim().take(200),
             registeredDirs = dirs,
+            rootFlavor = rootFlavor(),
             logTail = readLog(context).take(400),
         )
     }
@@ -198,13 +206,57 @@ object RootKeeper {
 
     private fun markerFile(context: Context) = File(context.filesDir, "rootkeep/installed")
 
-    /** 各 Root 框架的 service.d 约定目录。 */
-    private fun candidateDirs(): List<String> = listOf(
-        "/data/adb/service.d",       // Magisk
-        "/data/adb/ksu/service.d",   // KernelSU / Sukisu
-        "/data/adb/ap/service.d",    // APatch
-        "/data/adb/post-fs-data.d",  // Magisk（更早的阶段，多数脚本用不上）
-    )
+    /**
+     * 探测当前实际使用的 Root 方案，只返回**它自己**的开机脚本目录。
+     *
+     * 不能把四个目录全写一遍：
+     * - `mkdir -p` 会凭空造出 `/data/adb/ap/` 这种空目录，看着像装了 APatch；
+     * - 同一份脚本被执行多次，会出现多个守护进程互相抢着拉起服务。
+     *
+     * 判据用「框架自己的标志文件」，而不是「目录是否存在」——
+     * 因为空目录可能是我们上一次 `mkdir -p` 留下的。
+     */
+    private fun serviceDirs(): List<String> {
+        val out = runRootOutput(
+            "if [ -f /data/adb/magisk/magisk ]; then echo magisk; " +
+                "elif [ -d /data/adb/ksu/bin ]; then echo ksu; " +
+                "elif [ -d /data/adb/ap/bin ]; then echo apatch; " +
+                "else echo none; fi"
+        ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        return when (out) {
+            // Magisk：两个阶段都受支持，用 service.d（晚启动，系统服务已就绪）
+            "magisk" -> listOf("/data/adb/service.d")
+            // KernelSU / Sukisu：官方约定就是 ksu/service.d
+            "ksu" -> listOf("/data/adb/ksu/service.d")
+            "apatch" -> listOf("/data/adb/ap/service.d")
+            else -> emptyList()
+        }
+    }
+
+    /** 当前 Root 方案的展示名，用于界面提示。 */
+    fun rootFlavor(): String {
+        val out = runRootOutput(
+            "if [ -f /data/adb/magisk/magisk ]; then echo Magisk; " +
+                "elif [ -d /data/adb/ksu/bin ]; then echo KernelSU/Sukisu; " +
+                "elif [ -d /data/adb/ap/bin ]; then echo APatch; " +
+                "else echo 纯 su; fi"
+        ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        return out.ifEmpty { "未知" }
+    }
+
+    /** 清理上一版铺错位置的脚本（四个目录全写那版留下的）。 */
+    private fun cleanupStrayDirs(keep: List<String>) {
+        val all = listOf(
+            "/data/adb/service.d",
+            "/data/adb/ksu/service.d",
+            "/data/adb/ap/service.d",
+            "/data/adb/post-fs-data.d",
+        )
+        for (dir in all) {
+            if (dir in keep) continue
+            runRoot("rm -f '$dir/$SCRIPT_NAME'")
+        }
+    }
 
     /** 探测 root 是否可用且已授权（超时短，失败要快）。 */
     private fun hasRoot(): Boolean = runRootOutput("id").contains("uid=0")

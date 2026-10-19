@@ -243,6 +243,11 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 )
             } else {
                 RootStatusLine(
+                    label = "Root 方案",
+                    ok = rk.rootFlavor != "未知" && rk.rootFlavor != "纯 su",
+                    text = rk.rootFlavor,
+                )
+                RootStatusLine(
                     label = "守护进程",
                     ok = rk.processAlive,
                     text = if (rk.processAlive) "运行中（PID ${rk.pid}）" else "未运行",
