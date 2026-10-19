@@ -2,7 +2,6 @@ package dev.aigw.app.service
 
 import android.content.ComponentName
 import android.content.Context
-import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -48,7 +47,7 @@ object ShizukuBoost {
     private const val TAG = "ShizukuBoost"
     private const val REQUEST_CODE = 0x5A17
 
-    /** 用户服务版本：改了 [IShellProxy] 就要 +1，Shizuku 才会重建服务进程。 */
+    /** 用户服务版本：改了 exec 协议（[ShellProxyService]）就要 +1，Shizuku 才会重建服务进程。 */
     private const val PROXY_VERSION = 1
 
     /** UserService 的 tag，用于在多个进程里区分不同用途的代理。 */
@@ -183,6 +182,79 @@ object ShizukuBoost {
      * am/cmd 失败时通常往 stderr 抛 Exception 或报 Unknown command，
      * 单看退出码不可靠（部分子命令失败也返回 0），所以同时检查输出内容。
      */
-    private fun probe(proxy: IShellProxy, name: String, cmd: String): Report.Item {
+    private fun probe(proxy: Shell, name: String, cmd: String): Report.Item {
         val out = runCatching { proxy.exec(cmd) }.getOrElse { e ->
-            return Report.Item(name, false, "调用失败：${e.messa
+            return Report.Item(name, false, "调用失败：${e.message?.take(100)}")
+        }.trim()
+        val failed = out.contains("Exception", true) ||
+            out.contains("Error:", true) ||
+            out.contains("Unknown command", true) ||
+            out.contains("not found", true) ||
+            out.contains("Permission denied", true)
+        return Report.Item(name, !failed, if (failed) out.take(150) else "已执行")
+    }
+
+    private fun withProxy(context: Context, block: (Shell) -> Unit) {
+        if (currentState() != State.Ready) return
+        val component = ComponentName(context.packageName, ShellProxyService::class.java.name)
+        val args = Shizuku.UserServiceArgs(component)
+            .daemon(false)
+            .version(PROXY_VERSION)
+            .tag(PROXY_TAG)
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var remote: Messenger? = null
+
+        val conn = object : ServiceConnection {
+            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+                remote = service?.let { Messenger(it) }
+                latch.countDown()
+            }
+
+            override fun onServiceDisconnected(name: ComponentName?) {
+                latch.countDown()
+            }
+        }
+
+        try {
+            Shizuku.bindUserService(args, conn)
+            if (!latch.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                Log.w(TAG, "绑定 UserService 超时")
+                return
+            }
+            remote?.let { block(Shell(it)) }
+        } catch (e: Throwable) {
+            Log.w(TAG, "UserService 执行失败", e)
+        } finally {
+            runCatching { Shizuku.unbindUserService(args, conn, true) }
+        }
+    }
+}
+
+private class Shell(private val messenger: Messenger) {
+
+    fun exec(command: String): String {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var output = ""
+
+        val replyTo = Messenger(Handler(Looper.getMainLooper()) { msg ->
+            output = msg.data.getString(ShellProxyService.KEY_OUT).orEmpty()
+            latch.countDown()
+            true
+        })
+
+        val request = Message.obtain().apply {
+            what = ShellProxyService.WHAT_EXEC
+            data = Bundle().apply { putString(ShellProxyService.KEY_CMD, command) }
+            this.replyTo = replyTo
+        }
+
+        try {
+            messenger.send(request)
+        } catch (e: Throwable) {
+            return "发送失败：${e.message}"
+        }
+        if (!latch.await(8, java.util.concurrent.TimeUnit.SECONDS)) return "等待结果超时"
+        return output
+    }
+}

@@ -30,14 +30,6 @@ android {
     compileSdk = 36
     buildToolsVersion = "35.0.0"
 
-    sourceSets {
-        // Shizuku UserService 的 AIDL：AGP 不会自动把 src/main/aidl 当源集，
-        // 不显式声明会导致 IShellProxy 生成不出来（表现为 Kotlin 里 Unresolved reference）。
-        getByName("main") {
-            aidl.srcDir("src/main/aidl")
-        }
-    }
-
     defaultConfig {
         applicationId = "dev.tyd.app"
         minSdk = 26
