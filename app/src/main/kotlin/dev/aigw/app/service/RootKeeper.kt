@@ -203,12 +203,12 @@ object RootKeeper {
     )
 
     /** 探测 root 是否可用且已授权（超时短，失败要快）。 */
-    private fun hasRoot(): Boolean = runRoot("id").contains("uid=0")
+    private fun hasRoot(): Boolean = runRootOutput("id").contains("uid=0")
 
     /** 找守护进程 PID：按脚本名匹配，避免误杀别人的 sh。 */
     private fun findPid(): String {
-        val out = runRootOutput("pgrep -f '$SCRIPT_NAME' 2>/dev/null").trim()
-        // pgrep 可能返回多行（理论上单实例），取第一个
+        val out = runRootOutput("pgrep -f '$SCRIPT_NAME' 2>/dev/null")
+        // pgrep 可能返回多行（理论上单实例），取第一个非空行
         return out.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
     }
 
