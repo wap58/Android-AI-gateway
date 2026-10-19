@@ -34,8 +34,7 @@ android {
         applicationId = "dev.tyd.app"
         minSdk = 26
         targetSdk = 36
-        // 版本策略（用户指定）：
-        // versionName 冻结在 0.0.6 发正式 release；
+        // 版本策略（用户指定）：版本名冻结在 0.0.6 作为正式 release 基线，
         // 之后只递增 versionCode 走 CI 测试包，攒够一波改动再统一发新 release。
         versionCode = 7
         versionName = "0.0.6"

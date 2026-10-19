@@ -57,7 +57,7 @@ jobs:
       - name: 读取版本号
         id: version
         run: |
-          VERSION=$(grep -m1 'versionName' app/build.gradle.kts | sed -E 's/.*"(.*)".*/\1/')
+          VERSION=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "本次版本：$VERSION"
 

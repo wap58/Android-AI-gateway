@@ -48,12 +48,14 @@ fun ProviderListScreen(
                 icon = Icons.Filled.Storage,
                 contentDescription = "模型",
                 onClick = onOpenModels,
+                label = "模型",
             )
             // 添加自定义供应商（加号方框）
             SquareIconButton(
                 icon = Icons.Filled.Add,
                 contentDescription = "添加自定义供应商",
                 onClick = onAddCustom,
+                label = "添加",
             )
         },
     ) {
