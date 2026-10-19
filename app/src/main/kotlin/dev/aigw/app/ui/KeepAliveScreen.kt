@@ -312,11 +312,9 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 }
             }
 
-            // 四个操作按钮：宽度够就排一行，窄屏自动折行（强制一行会把文字压成竖排）
-            androidx.compose.foundation.layout.FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
+            // 四个操作按钮固定一行：文案都是两个字（安装/重装、自检、清除、卸载），
+            // 宽度刚好排满，不需要折行逻辑。
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChoiceChip(
                     if (state.rootKeeper?.ok == true) "重装" else "安装",
                     selected = false,
