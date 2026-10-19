@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
  * 以及不打开 App 也能导入账号 / 签到 / 看用量。
  *
  * 用法：
- *   aigw serve [--port 8790] [--data DIR]
+ *   aigw serve [--port 8866] [--data DIR]
  *   aigw providers
  *   aigw accounts [--provider ID]
  *   aigw credits [--provider ID]
@@ -237,7 +237,7 @@ private fun printHelp() {
         """
         用法：aigw <命令> [选项]
 
-          serve                   启动网关（--port 8790，--data DIR）
+          serve                   启动网关（--port 8866，--data DIR）
           providers               列出全部供应商
           accounts                列出账号与状态（--provider ID）
           credits                 刷新账号额度（--provider ID）

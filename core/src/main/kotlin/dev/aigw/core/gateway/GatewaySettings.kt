@@ -56,7 +56,13 @@ data class GatewaySettings(
     }
 
     companion object {
-        const val DEFAULT_PORT = 8790
+        /**
+         * 默认监听端口。
+         *
+         * 刻意避开 8790 —— 那是上游原版 APK 的默认端口，两者并存时若撞端口，
+         * 后启动的一方会绑定失败。改成 8866 与原版互不干扰。
+         */
+        const val DEFAULT_PORT = 8866
         const val STORE_KEY = "settings/gateway.json"
 
         const val DEFAULT_RETENTION_DAYS = 30
