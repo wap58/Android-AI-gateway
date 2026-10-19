@@ -120,9 +120,10 @@ object RootKeeper {
 
         // 等一小会儿看进程是否真的起来了（am/sh 启动有延迟）
         var pid = ""
-        repeat(10) {
+        // 轮询等进程起来：拿到 PID 就立刻结束等待（return@repeat 只会跳过本轮，不能提前退出）
+        for (i in 0 until 10) {
             pid = findPid()
-            if (pid.isNotEmpty()) return@repeat
+            if (pid.isNotEmpty()) break
             Thread.sleep(200)
         }
 

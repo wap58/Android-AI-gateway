@@ -79,7 +79,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: 重命名产物
-        run: cp app/build/outputs/apk/release/app-release.apk "ai-gateway-${{ steps.version.outputs.version }}-release.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "tianyuanding-${{ steps.version.outputs.version }}-release.apk"
 
       - name: 创建 Release 并上传 APK
         uses: softprops/action-gh-release@v2
@@ -89,4 +89,4 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: v${{ steps.version.outputs.version }}
           body: ${{ steps.changelog.outputs.body }}
-          files: ai-gateway-${{ steps.version.outputs.version }}-release.apk
+          files: tianyuanding-${{ steps.version.outputs.version }}-release.apk

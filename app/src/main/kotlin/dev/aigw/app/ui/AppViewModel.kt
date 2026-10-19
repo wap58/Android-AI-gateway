@@ -884,8 +884,14 @@ class AppViewModel(
 
     /** 请求 Shizuku 授权（弹系统确认框）。 */
     fun shizukuRequestPermission() {
-        dev.aigw.app.service.ShizukuBoost.requestPermission()
-        notice("请在 Shizuku 的弹窗里点「允许」")
+        val blocked = dev.aigw.app.service.ShizukuBoost.requestPermission()
+        notice(
+            if (blocked) {
+                "已被拒绝且不再询问：请到 Sui / Shizuku 管理界面里给天元鼎手动开启授权"
+            } else {
+                "已发出授权请求，请在弹窗里点「允许」"
+            }
+        )
     }
 
     /** 撤销 Shizuku 增强。 */

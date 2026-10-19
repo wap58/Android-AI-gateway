@@ -84,9 +84,9 @@ object ShizukuBoost {
     @Volatile
     private var suiMode = false
 
-    /** 初始化过一次就不再重复（Sui.init 规定只能调一次）。 */
+    /** Sui.init 是否已经尝试过（它规定只能调一次）。 */
     @Volatile
-    private var binderInitialized = false
+    private var suiTried = false
 
     /**
      * 获取 Shizuku / Sui 的 binder —— **必须在任何 Shizuku API 之前调用一次**。
@@ -102,19 +102,21 @@ object ShizukuBoost {
      * @return true 表示拿到了 binder（Sui 或 Shizuku 均可）
      */
     fun initBinder(context: Context): Boolean {
-        if (binderInitialized) return Shizuku.pingBinder()
-        binderInitialized = true
-        // Sui 先试：它是模块形态，没有 ContentProvider 兜底，不主动拿就永远拿不到。
-        // Sui.init 自带判断，没装 Sui 时直接返回 false，不会抛异常。
-        val suiOk = runCatching { rikka.sui.Sui.init(context.packageName) }
-            .onFailure { Log.w(TAG, "Sui.init 失败", it) }
-            .getOrDefault(false)
-        suiMode = suiOk
-        if (suiOk) {
-            Log.i(TAG, "已通过 Sui 获得 binder（模块形态）")
-            return true
+        // 幂等：Sui.init 规定只能调一次。
+        // 但**不能**因为「已经初始化过」就直接返回 false ——
+        // Shizuku 的 binder 是 provider 异步递过来的，首次调用时往往还没到，
+        // 这里用 @Volatile 记住「Sui 试过了」即可，binder 是否就绪每次都实时读。
+        if (!suiTried) {
+            suiTried = true
+            // Sui 先试：它是模块形态，没有 ContentProvider 兜底，不主动拿就永远拿不到。
+            // Sui.init 自带判断，没装 Sui 时直接返回 false，不会抛异常。
+            val suiOk = runCatching { rikka.sui.Sui.init(context.packageName) }
+                .onFailure { Log.w(TAG, "Sui.init 失败", it) }
+                .getOrDefault(false)
+            suiMode = suiOk
+            if (suiOk) Log.i(TAG, "已通过 Sui 获得 binder（模块形态）")
         }
-        // 再看 Shizuku 的 provider 是否已经把 binder 递过来了
+        // 每次实时读：Shizuku 的 binder 可能在这一刻之后才到
         return Shizuku.pingBinder()
     }
 
@@ -135,14 +137,19 @@ object ShizukuBoost {
     fun observe(onChanged: () -> Unit): () -> Unit {
         val received = Shizuku.OnBinderReceivedListener { onChanged() }
         val dead = Shizuku.OnBinderDeadListener { onChanged() }
+        // 授权结果回调：用户点「请求授权」并在系统弹窗里允许后，
+        // 必须立刻刷新界面 —— 否则会一直停在「待授权」，得退出页面再进才更新。
+        val permissionResult = Shizuku.OnRequestPermissionResultListener { _, _ -> onChanged() }
         runCatching {
             // Sticky：若 binder 已就绪会立即回调，不会漏掉进程启动早期那次
             Shizuku.addBinderReceivedListenerSticky(received)
             Shizuku.addBinderDeadListener(dead)
+            Shizuku.addRequestPermissionResultListener(permissionResult)
         }.onFailure { Log.w(TAG, "注册 binder 监听失败", it) }
         return {
             runCatching { Shizuku.removeBinderReceivedListener(received) }
             runCatching { Shizuku.removeBinderDeadListener(dead) }
+            runCatching { Shizuku.removeRequestPermissionResultListener(permissionResult) }
         }
     }
 
@@ -155,10 +162,18 @@ object ShizukuBoost {
         else -> State.NeedPermission
     }
 
-    fun requestPermission() {
-        if (Shizuku.shouldShowRequestPermissionRationale()) return
+    /**
+     * 请求授权。
+     *
+     * @return 需要用户去管理器里手动开启时返回 true（点了「拒绝且不再询问」，
+     *         此时再弹窗也不会出现，只能引导用户去 Sui / Shizuku 里手动允许）
+     */
+    fun requestPermission(): Boolean {
+        val blocked = runCatching { Shizuku.shouldShowRequestPermissionRationale() }.getOrDefault(false)
+        if (blocked) return true
         runCatching { Shizuku.requestPermission(REQUEST_CODE) }
             .onFailure { Log.w(TAG, "requestPermission 失败", it) }
+        return false
     }
 
     // ---------------------------------------------------------------- 执行
