@@ -11,6 +11,7 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.util.Log
+import java.util.concurrent.TimeUnit
 import rikka.shizuku.Shizuku
 
 /**
@@ -52,6 +53,14 @@ object ShizukuBoost {
 
     /** UserService 的 tag，用于在多个进程里区分不同用途的代理。 */
     private const val PROXY_TAG = "tyd_shell_proxy"
+
+    /**
+     * su 命令的等待上限（秒）。
+     *
+     * Sukisu / KernelSU 在新包首次请求 root 时会弹授权框，若用户不处理，
+     * 没有超时的 waitFor 会永久阻塞调用线程（表现为界面卡死、点了没反应）。
+     */
+    private const val SU_TIMEOUT_SEC = 20L
 
     // ---------------------------------------------------------------- 状态
 
@@ -368,7 +377,11 @@ private object RootShell : Exec {
         usable = runCatching {
             val p = ProcessBuilder("su", "0", "-c", "id").redirectErrorStream(true).start()
             val out = p.inputStream.bufferedReader().use { it.readText() }
-            p.waitFor()
+            // 必须有超时：Sukisu 每次新授权都会弹确认框，用户不理会就会永久阻塞在这里
+            if (!p.waitFor(SU_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                return@runCatching false
+            }
             out.contains("uid=0")
         }.getOrDefault(false)
         return usable
@@ -385,7 +398,10 @@ private object RootShell : Exec {
             var line: String?
             while (r.readLine().also { line = it } != null) sb.append("[err] ").append(line).append('\n')
         }
-        p.waitFor()
+        if (!p.waitFor(SU_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            return@runCatching sb.toString() + "[err] 执行超时（${SU_TIMEOUT_SEC}s），已终止"
+        }
         p.destroy()
         sb.toString()
     }.getOrElse { "执行失败：${it.message}" }

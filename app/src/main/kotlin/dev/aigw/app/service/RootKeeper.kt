@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
+import java.util.concurrent.TimeUnit
 
 /**
  * Root 守护的一键安装 / 卸载 / 状态查询。
@@ -28,6 +29,9 @@ object RootKeeper {
 
     /** 网关端口，必须与 GatewaySettings.DEFAULT_PORT 一致（探活用）。 */
     private const val PORT = 8877
+
+    /** su 命令等待上限（秒）：用户不点授权框时不能永久卡住。 */
+    private const val SU_TIMEOUT_SEC = 20L
 
     /** 安装结果。 */
     sealed interface Result {
@@ -237,7 +241,10 @@ object RootKeeper {
             // 读失败不影响退出码判定
         }
         try {
-            p.waitFor()
+            if (!p.waitFor(SU_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                sb.append("[err] 执行超时（${SU_TIMEOUT_SEC}s）")
+            }
         } catch (_: Exception) {
         }
         return sb.toString()
@@ -249,7 +256,12 @@ object RootKeeper {
      */
     private fun rootExit(cmd: String): Int = try {
         val p = ProcessBuilder("su", "0", "-c", cmd).redirectErrorStream(true).start()
-        p.waitFor()
+        if (!p.waitFor(SU_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+            p.destroyForcibly()
+            -1
+        } else {
+            0
+        }
     } catch (_: Exception) {
         -1
     }
