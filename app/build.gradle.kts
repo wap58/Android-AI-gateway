@@ -36,8 +36,8 @@ android {
         targetSdk = 36
         // 版本策略（用户指定）：版本名冻结在 0.0.6 作为正式 release 基线，
         // 之后只递增 versionCode 走 CI 测试包，攒够一波改动再统一发新 release。
-        versionCode = 13
-        versionName = "0.0.7"
+        versionCode = 14
+        versionName = "0.0.6"
     }
 
     buildFeatures {
