@@ -11,7 +11,10 @@
 # /data/adb/ksu/bin/），写死会静默失败，表现为「守护在跑但永远拉起不了服务」。
 
 PKG="dev.tyd.app"
-SVC="dev.tyd.app/.service.GatewayService"
+# 注意：服务类的包名是代码命名空间 dev.aigw.app，不是 applicationId dev.tyd.app。
+# 写成 "dev.tyd.app/.service.GatewayService" 会被展开成 dev.tyd.app.service.GatewayService，
+# 那个类不存在 —— am 直接报 "Error: Not found; no service started."，守护永远拉不起来。
+SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 PORT=8877
 TAG="tyd_keepalive"
 INTERVAL=20
