@@ -239,6 +239,12 @@ object ShizukuBoost {
 
     private fun withProxy(context: Context, block: (Exec) -> Unit) {
         if (currentState() != State.Ready) return
+        // Sui 是 root 环境刷入的模块，su 必定可用，而 Sui 官方 API 不提供 UserService。
+        // 直接走 root，省掉一次注定失败的 bindUserService（那会白等 5 秒超时）。
+        if (suiMode && RootShell.available()) {
+            block(RootShell)
+            return
+        }
         val component = ComponentName(context.packageName, ShellProxyService::class.java.name)
         val args = Shizuku.UserServiceArgs(component)
             .daemon(false)

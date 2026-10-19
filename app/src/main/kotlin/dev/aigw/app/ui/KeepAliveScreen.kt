@@ -70,10 +70,13 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
     // Shizuku 状态必须响应式：用户在 Shizuku App 里授权/断开会立刻反映到本页。
     // 直接调用 currentState() 拿到的是瞬时值，不会触发重绘。
     var shizukuState by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.currentState()) }
+    // Sui / Shizuku 的判定同样要响应式：binder 在进程启动后才就绪
+    var suiMode by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.isSui()) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 shizukuState = dev.aigw.app.service.ShizukuBoost.currentState()
+                suiMode = dev.aigw.app.service.ShizukuBoost.isSui()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -274,7 +277,11 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         SectionCard(enterIndex = 5) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Shizuku 增强（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = if (suiMode) "Sui 增强（可选）" else "Shizuku 增强（可选）",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
                     Text(
                         text = "无需 Root。用 Shizuku / Sui 的 adb 身份把系统压制开关一次性调到最有利：" +
                             "加入 Doze 白名单（深度睡眠豁免）、standby 提到 active、解除休眠冻结。",
