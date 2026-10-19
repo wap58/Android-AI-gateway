@@ -844,6 +844,17 @@ class AppViewModel(
         }
     }
 
+    /** 读完整守护日志（「更多」弹窗用，同步返回，调用方放 IO 或点击回调里）。 */
+    fun loadFullRootKeeperLog(): String =
+        runCatching { dev.aigw.app.service.RootKeeper.readFullLog(app) }.getOrDefault("")
+
+    /** 清空守护日志。 */
+    fun clearRootKeeperLog() = action {
+        val ok = runCatching { dev.aigw.app.service.RootKeeper.clearLog() }.getOrDefault(false)
+        refreshRootKeeperState()
+        if (ok) "守护日志已清空" else "清除失败：没有 root 权限或日志不存在"
+    }
+
     /** 卸载 Root 守护。 */
     fun uninstallRootKeeper() = action {
         when (val r = dev.aigw.app.service.RootKeeper.uninstall(app)) {

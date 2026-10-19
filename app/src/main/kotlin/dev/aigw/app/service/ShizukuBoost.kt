@@ -37,8 +37,8 @@ private const val SU_TIMEOUT_SEC = 20L
  * |---|---|---|
  * | Doze 白名单 | `cmd deviceidle whitelist +<pkg>` | 深度睡眠豁免，**系统级最强** |
  * | Standby 分级 | `am set-standby-bucket <pkg> active` | Job/Alarm/FCM 频率 |
- * | 后台限制等级 | `am set-bg-restriction-level <pkg> unrestricted` | 对应设置里的开关 |
- * | 休眠豁免 | `am set-inactive <pkg> false` | 防长期不用被 hibernation 冻结 |
+ * | 后台限制等级 | `am set-bg-restriction-level --user 0 <pkg> unrestricted` | 对应设置里的开关；**必须带 --user 0**，否则报 userId:-2 |
+ * | 休眠豁免 | `am set-inactive --user 0 <pkg> false` | 防 hibernation 冻结；`get-inactive` 输出是 `Idle=false` 不是裸 false |
  * | 省流量白名单 | `cmd netpolicy add restrict-background-whitelist <uid>` | 省流量下后台联网 |
  *
  * 注意 `deviceidle` 的白名单语法是 `+包名` / `-包名`，
@@ -193,10 +193,10 @@ object ShizukuBoost {
         val results = mutableListOf<Report.Item>()
         withProxy(context) { proxy ->
             results += probe(proxy, "Doze 白名单", "cmd deviceidle whitelist +$pkg")
-            results += probe(proxy, "Standby 分级", "am set-standby-bucket $pkg active")
+            results += probe(proxy, "Standby 分级", "am set-standby-bucket --user 0 $pkg active")
             // Android 15+ 才有这个子命令，低版本会报 Unknown command —— 失败不影响其它项
-            results += probe(proxy, "后台限制等级", "am set-bg-restriction-level $pkg unrestricted")
-            results += probe(proxy, "休眠豁免", "am set-inactive $pkg false")
+            results += probe(proxy, "后台限制等级", "am set-bg-restriction-level --user 0 $pkg unrestricted")
+            results += probe(proxy, "休眠豁免", "am set-inactive --user 0 $pkg false")
             results += probe(proxy, "省流量白名单", "cmd netpolicy add restrict-background-whitelist $uid")
         }
         if (results.isEmpty()) {
@@ -222,8 +222,10 @@ object ShizukuBoost {
             val inWhitelist = whitelistOut.contains(pkg)
             items += Report.Item("Doze 白名单", inWhitelist, if (inWhitelist) "已在名单内" else "不在名单内")
 
-            val inactive = proxy.exec("am get-inactive $pkg").trim()
-            items += Report.Item("休眠状态", inactive == "false", "inactive=$inactive（false 为佳）")
+            // 实际输出形如 "Idle=false"（不是裸的 false），必须按后缀判断
+            val inactive = proxy.exec("am get-inactive --user 0 $pkg").trim()
+            val inactiveOk = inactive.endsWith("false", ignoreCase = true)
+            items += Report.Item("休眠状态", inactiveOk, "当前：$inactive（Idle=false 为佳）")
 
             val bucket = proxy.exec("am get-standby-bucket $pkg").trim()
             val bucketOk = bucket == "10"
@@ -233,7 +235,7 @@ object ShizukuBoost {
                 "bucket=$bucket（10=active 最优，5=restricted 最差）",
             )
 
-            val restriction = proxy.exec("am get-bg-restriction-level $pkg").trim()
+            val restriction = proxy.exec("am get-bg-restriction-level --user 0 $pkg").trim()
             items += Report.Item(
                 "后台限制等级",
                 restriction.isEmpty() || restriction == "unrestricted",
@@ -254,7 +256,7 @@ object ShizukuBoost {
         withProxy(context) { proxy ->
             items += probe(proxy, "移除 Doze 白名单", "cmd deviceidle whitelist -$pkg")
             items += probe(proxy, "恢复 Standby 分级", "am set-standby-bucket $pkg frequent")
-            items += probe(proxy, "恢复休眠判定", "am set-inactive $pkg true")
+            items += probe(proxy, "恢复休眠判定", "am set-inactive --user 0 $pkg true")
         }
         if (items.isEmpty()) items += Report.Item("Shizuku", false, "无法启动代理服务")
         return Report(items)

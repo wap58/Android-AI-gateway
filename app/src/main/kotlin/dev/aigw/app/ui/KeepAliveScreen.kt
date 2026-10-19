@@ -27,6 +27,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import dev.aigw.app.data.KeepAlive
@@ -81,6 +85,10 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
     // 界面会一直停在「未授权」，用户必须退出去再进来才刷新。
     var shizukuState by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.currentState()) }
     var suiMode by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.isSui()) }
+    // 完整日志弹窗的显隐
+    var showLogDialog by remember { mutableStateOf(false) }
+    // 弹窗里的完整日志：点「更多」时加载一次，避免重组期间反复起 su 进程
+    var fullLogText by remember { mutableStateOf("") }
 
     DisposableEffect(Unit) {
         // binder 到达 / 断开时立刻重算，不用等用户手动切页面
@@ -271,27 +279,60 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     ok = rk.ok,
                     text = if (rk.ok) "已生效（被杀会自动复活）" else "未生效，请看上面哪项没通过",
                 )
+                // 日志只露 3 行：守护每 20 秒一轮，完整日志很快就能把卡片撑很长。
+                // 想看全的走「更多」弹窗，想清掉的走「清除」。
                 if (rk.logTail.isNotEmpty()) {
+                    val lines = rk.logTail.lines().filter { it.isNotBlank() }
+                    val preview = lines.takeLast(3).joinToString("\n")
                     Text(
-                        text = "最近日志：${rk.logTail}",
+                        text = "最近日志：\n$preview",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 5,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
                     )
                 }
             }
 
-            // 三个按钮并排会把「卸载」挤成竖排，改成两行：
-            // 第一行安装（主操作），第二行检测 + 卸载
+            // 两行布局：主操作一行，辅助操作一行。
+            // 四个按钮挤在一行会把文字压成竖排，所以拆开。
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ChoiceChip(
-                    if (state.rootKeeper?.ok == true) "重新安装守护" else "安装守护",
-                    selected = false,
-                ) { viewModel.installRootKeeper() }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    ChoiceChip("重新检测", selected = false) { viewModel.refreshRootKeeperState() }
+                    ChoiceChip(
+                        if (state.rootKeeper?.ok == true) "重装" else "安装",
+                        selected = false,
+                    ) { viewModel.installRootKeeper() }
+                    ChoiceChip("自检", selected = false) { viewModel.verifyRootKeeper() }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ChoiceChip("更多", selected = false) {
+                        fullLogText = viewModel.loadFullRootKeeperLog()
+                        showLogDialog = true
+                    }
+                    ChoiceChip("清除", selected = false) { viewModel.clearRootKeeperLog() }
                     ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
                 }
             }
+        }
+
+        // 完整日志弹窗：「更多」打开，可滚动查看最近 200 行。
+        // 日志只在打开时加载一次（存进 fullLog 状态），不能写在重组里 ——
+        // 那会让每帧都起一次 su 进程，界面直接卡死。
+        if (showLogDialog) {
+            AlertDialog(
+                onDismissRequest = { showLogDialog = false },
+                title = { Text("守护日志") },
+                text = {
+                    Text(
+                        text = fullLogText.ifEmpty { "暂无日志" },
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { showLogDialog = false }) { Text("关闭") }
+                },
+            )
         }
 
         // Shizuku 增强：无 Root 也能把系统的压制等级调低（Doze 白名单、standby 分级等）

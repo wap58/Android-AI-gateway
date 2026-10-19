@@ -30,6 +30,9 @@ object RootKeeper {
     /** 网关端口，必须与 GatewaySettings.DEFAULT_PORT 一致（探活用）。 */
     private const val PORT = 8877
 
+    /** 守护脚本写日志的固定路径（与 assets/tyd_keepalive.sh 里的 LOG 保持一致）。 */
+    private const val LOG_PATH = "/data/adb/tyd_keepalive.log"
+
     /** su 命令等待上限（秒）：用户不点授权框时不能永久卡住。 */
     private const val SU_TIMEOUT_SEC = 20L
 
@@ -206,8 +209,24 @@ object RootKeeper {
     fun readLog(context: Context): String {
         val local = File(context.filesDir, "rootkeep/$SCRIPT_NAME")
         if (!local.exists()) return ""
-        return runRootOutput("tail -n 20 /data/adb/tyd_keepalive.log 2>/dev/null").trim()
+        return runRootOutput("tail -n 20 $LOG_PATH 2>/dev/null").trim()
     }
+
+    /** 读完整日志（「更多」弹窗用）：最多取末尾 200 行，避免超大文件把弹窗撑爆。 */
+    fun readFullLog(context: Context): String {
+        val local = File(context.filesDir, "rootkeep/$SCRIPT_NAME")
+        if (!local.exists()) return ""
+        return runRootOutput("tail -n 200 $LOG_PATH 2>/dev/null").trim()
+    }
+
+    /**
+     * 清空守护日志。
+     *
+     * 用 `: > file` 而不是 `rm`：守护进程还持有该文件的写入句柄，
+     * 删掉后它继续往已 unlink 的 inode 写，日志会「消失」但磁盘空间不释放。
+     * 截断则保持 inode 不变，守护下一行写入自然接上。
+     */
+    fun clearLog(): Boolean = runRoot(": > $LOG_PATH")
 
     // ---------------------------------------------------------------- 内部实现
 
