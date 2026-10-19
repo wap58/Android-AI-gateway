@@ -63,9 +63,18 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // 首次进入就查一次 Root 守护状态：ON_RESUME 只在切回时触发，
-    // 冷进入本页不会收到事件，不补这一句状态会一直显示「正在查询」。
-    LaunchedEffect(Unit) { viewModel.refreshRootKeeperState() }
+    // Root 守护状态：进页面查一次，之后停留在本页期间每 3 秒复查一次。
+    //
+    // 为什么需要轮询：守护进程的 PID、探活结果会变化（被杀后重新拉起、网关重启等），
+    // 只查一次的话界面会一直停在进入页面那一刻的快照，用户必须退出重进才看到最新状态
+    // （这正是之前「退出重进又正常了」的现象）。
+    // 查询走 IO 线程、每次只起几个短命令，3 秒间隔对系统负担可忽略。
+    LaunchedEffect(Unit) {
+        while (true) {
+            viewModel.refreshRootKeeperState()
+            kotlinx.coroutines.delay(3_000)
+        }
+    }
 
     // Shizuku / Sui 状态要事件驱动：binder 是异步递过来的，
     // 只靠 ON_RESUME 查一次的话，首次进本页时 binder 常常还没就绪，
@@ -209,21 +218,14 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         }
 
         SectionCard(enterIndex = 4) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        text = "本应用自身全部功能都不需要 root：悬浮窗、开机自启、隐藏多任务走的是系统公开权限。" +
-                            "只有「被杀自动复活」这一层需要 root，点下面的按钮即可一键安装，无需手动操作。",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            // 标题已写明「可选」，不再单挂一个「需 ROOT」红标（与文案重复且抢占视线）
+            Column(Modifier.fillMaxWidth()) {
+                Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                 Text(
-                    text = "需 ROOT",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.error,
+                    text = "本应用自身全部功能都不需要 root：悬浮窗、开机自启、隐藏多任务走的是系统公开权限。" +
+                        "只有「被杀自动复活」这一层需要 root，点下面的按钮即可一键安装，无需手动操作。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Text(
