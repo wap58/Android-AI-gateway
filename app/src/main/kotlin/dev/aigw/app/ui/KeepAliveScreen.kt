@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import dev.aigw.app.data.KeepAlive
@@ -251,7 +252,10 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                when (shizukuState) {
+                // shizukuState 是 by remember 委托属性，Kotlin 不能对它做 smart cast，
+                // 必须先取到局部变量再 when
+                val state = shizukuState
+                when (state) {
                     dev.aigw.app.service.ShizukuBoost.State.Ready -> {
                         ChoiceChip("一键增强", selected = false) { viewModel.shizukuBoost() }
                         ChoiceChip("自检", selected = false) { viewModel.shizukuInspect() }
@@ -267,7 +271,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                         )
                     is dev.aigw.app.service.ShizukuBoost.State.TooOld ->
                         Text(
-                            text = "Shizuku 版本过低（v${shizukuState.version}），需要 11 以上。",
+                            text = "Shizuku 版本过低（v${state.version}），需要 11 以上。",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.error,
                         )

@@ -5,7 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.os.Message
+import android.os.Messenger
 import android.util.Log
 import rikka.shizuku.Shizuku
 
@@ -180,56 +185,4 @@ object ShizukuBoost {
      */
     private fun probe(proxy: IShellProxy, name: String, cmd: String): Report.Item {
         val out = runCatching { proxy.exec(cmd) }.getOrElse { e ->
-            return Report.Item(name, false, "调用失败：${e.message?.take(100)}")
-        }.trim()
-        val failed = out.contains("Exception", true) ||
-            out.contains("Error:", true) ||
-            out.contains("Unknown command", true) ||
-            out.contains("not found", true) ||
-            out.contains("Permission denied", true)
-        return Report.Item(name, !failed, if (failed) out.take(150) else "已执行")
-    }
-
-    /**
-     * 绑定 UserService 并执行动作，用完立即解绑。
-     *
-     * 用 CountDownLatch 等绑定完成：Shizuku 首次拉起服务进程有几百毫秒延迟，
-     * 不等就会拿到 null。
-     */
-    private fun withProxy(context: Context, block: (IShellProxy) -> Unit) {
-        if (currentState() != State.Ready) return
-        val component = ComponentName(context.packageName, ShellProxyService::class.java.name)
-        val args = Shizuku.UserServiceArgs(component)
-            .daemon(false)      // 非常驻：用完就退，不长期占一个进程
-            .version(PROXY_VERSION)
-            .tag(PROXY_TAG)
-
-        val latch = java.util.concurrent.CountDownLatch(1)
-        var proxy: IShellProxy? = null
-
-        val conn = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                proxy = runCatching { IShellProxy.Stub.asInterface(service) }.getOrNull()
-                latch.countDown()
-            }
-
-            override fun onServiceDisconnected(name: ComponentName?) {
-                latch.countDown()
-            }
-        }
-
-        try {
-            Shizuku.bindUserService(args, conn)
-            // 最多等 5 秒：首次拉起服务进程可能需要更久
-            if (!latch.await(5, java.util.concurrent.TimeUnit.SECONDS)) {
-                Log.w(TAG, "绑定 UserService 超时")
-                return
-            }
-            proxy?.let(block)
-        } catch (e: Throwable) {
-            Log.w(TAG, "UserService 执行失败", e)
-        } finally {
-            runCatching { Shizuku.unbindUserService(args, conn, true) }
-        }
-    }
-}
+            return Report.Item(name, false, "调用失败：${e.messa
