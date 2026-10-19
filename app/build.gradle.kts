@@ -31,11 +31,11 @@ android {
     buildToolsVersion = "35.0.0"
 
     defaultConfig {
-        applicationId = "dev.aigw.app"
+        applicationId = "dev.tyd.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 162
-        versionName = "2.12.1"
+        versionCode = 1
+        versionName = "1.0.0"
     }
 
     buildFeatures {

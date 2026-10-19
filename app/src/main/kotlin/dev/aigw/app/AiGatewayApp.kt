@@ -21,10 +21,15 @@ class AiGatewayApp : Application() {
     var engine: GatewayEngine? = null
         private set
 
+    /** 全局共享的键值存储（保活开关与引擎共用，避免重复解密）。 */
+    lateinit var store: EncryptedKeyValueStore
+        private set
+
     override fun onCreate() {
         super.onCreate()
+        store = EncryptedKeyValueStore(this)
         val created = GatewayEngine(
-            store = EncryptedKeyValueStore(this),
+            store = store,
             lanAddressProvider = { LanAddresses.current(this) },
             // 调用记录预载与过期清理改走后台，冷启动首帧不再等全量解密
             preloadCallLogs = false,
@@ -33,6 +38,11 @@ class AiGatewayApp : Application() {
             spillDir = java.io.File(cacheDir, "call-fulltext"),
         )
         engine = created
+        // 「隐藏多任务」保活：应用真正退到后台时把自己从最近任务列表移除。
+        // 开关实时读取，用户改了立即生效，无需重新注册。
+        dev.aigw.app.service.HideRecents.install(this) {
+            dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(store)
+        }
         getSystemService<NotificationManager>()?.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,

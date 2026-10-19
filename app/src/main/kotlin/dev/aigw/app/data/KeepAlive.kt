@@ -28,15 +28,33 @@ data class KeepAliveStatus(
         get() = notificationsGranted && batteryUnrestricted && !backgroundRestricted && !dataSaverRestricted
 }
 
-/** 可选的悬浮窗保活开关（加密存储，服务与界面共读）。 */
+/** 可选的保活开关（加密存储，服务与界面共读）。 */
 object KeepAlivePrefs {
     private const val KEY_OVERLAY = "keepalive/overlay"
+    private const val KEY_AUTOSTART = "keepalive/autostart"
+    private const val KEY_HIDE_RECENTS = "keepalive/hide_recents"
 
     fun overlayEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_OVERLAY) == "1"
 
     fun setOverlayEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
         store.write(KEY_OVERLAY, if (enabled) "1" else "0")
+    }
+
+    /** 开机自启：系统启动后自动把网关服务拉起来。 */
+    fun autoStartEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_AUTOSTART) == "1"
+
+    fun setAutoStartEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_AUTOSTART, if (enabled) "1" else "0")
+    }
+
+    /** 隐藏多任务：离开应用后从最近任务列表移除，减少被一键清理的概率。 */
+    fun hideRecentsEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_HIDE_RECENTS) == "1"
+
+    fun setHideRecentsEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_HIDE_RECENTS, if (enabled) "1" else "0")
     }
 }
 

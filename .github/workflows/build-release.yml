@@ -59,11 +59,11 @@ jobs:
           echo "本次版本：$VERSION"
 
       - name: 重命名产物
-        run: cp app/build/outputs/apk/release/app-release.apk "ai-gateway-${{ steps.version.outputs.version }}-release.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "tianyuanding-${{ steps.version.outputs.version }}.apk"
 
       - name: 上传 APK（artifact，不创建 Release）
         uses: actions/upload-artifact@v4
         with:
-          name: ai-gateway-${{ steps.version.outputs.version }}-release
-          path: ai-gateway-${{ steps.version.outputs.version }}-release.apk
+          name: tianyuanding-${{ steps.version.outputs.version }}
+          path: tianyuanding-${{ steps.version.outputs.version }}.apk
           retention-days: 14

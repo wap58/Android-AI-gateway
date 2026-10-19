@@ -271,6 +271,10 @@ data class AppUiState(
     val security: dev.aigw.core.security.SecuritySettings = dev.aigw.core.security.SecuritySettings(),
     /** 可选的悬浮窗保活是否开启（需「显示在其他应用上层」权限）。 */
     val overlayKeepAlive: Boolean = false,
+    /** 开机自启：系统启动后自动拉起网关服务。 */
+    val autoStart: Boolean = false,
+    /** 隐藏多任务：离开应用后从最近任务列表移除。 */
+    val hideRecents: Boolean = false,
     /** 模型开放名单：只对外暴露勾选的模型。 */
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings = dev.aigw.core.gateway.ModelExposureSettings(),
     /** 故障转移与并发配置。 */
@@ -321,6 +325,8 @@ private class Snapshot(
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings,
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
+    val autoStart: Boolean,
+    val hideRecents: Boolean,
 )
 
 class AppViewModel(
@@ -421,6 +427,8 @@ class AppViewModel(
                     modelExposure = engine.modelExposureSettings(),
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
+                    autoStart = dev.aigw.app.data.KeepAlivePrefs.autoStartEnabled(engine.store()),
+                    hideRecents = dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
                 )
             }
             _state.value = _state.value.copy(
@@ -446,6 +454,8 @@ class AppViewModel(
                 modelExposure = snapshot.modelExposure,
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
+                autoStart = snapshot.autoStart,
+                hideRecents = snapshot.hideRecents,
             )
         }
     }
@@ -722,6 +732,34 @@ class AppViewModel(
                 dev.aigw.app.service.FloatingKeepAlive.hide(app)
                 notice("悬浮窗保活已关闭")
             }
+            refresh()
+        }
+    }
+
+    /**
+     * 开关「开机自启」：落盘后由 BootReceiver 在系统启动时读取并拉起服务。
+     *
+     * 注意：开关只写自己的存储，真正的自启还需要系统「自启动」白名单放行
+     * （国产 ROM 默认拦截），所以这里同时提示去厂商后台设置里放行。
+     */
+    fun setAutoStart(enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setAutoStartEnabled(engine.store(), enabled) }
+            notice(if (enabled) "开机自启已开启（需系统自启动白名单放行）" else "开机自启已关闭")
+            refresh()
+        }
+    }
+
+    /**
+     * 开关「隐藏多任务」：落盘后立即生效。
+     *
+     * 不做「立即移除」——用户此刻就在应用里看这个开关，把自己从最近任务里踢掉
+     * 会让系统把当前任务也结束掉。真正的移除发生在下次退到后台时。
+     */
+    fun setHideRecents(enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setHideRecentsEnabled(engine.store(), enabled) }
+            notice(if (enabled) "已开启，下次退到后台会从最近任务中隐藏" else "隐藏多任务已关闭")
             refresh()
         }
     }

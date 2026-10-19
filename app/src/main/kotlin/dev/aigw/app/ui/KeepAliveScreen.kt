@@ -124,6 +124,51 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         }
 
         SectionCard(enterIndex = 2) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("开机自启", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "系统启动完成后自动把网关服务拉起来，不用每次手动打开应用。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.autoStart,
+                    onCheckedChange = { viewModel.setAutoStart(it) },
+                )
+            }
+            Text(
+                text = "注意：还需在系统的「自启动管理」里放行本应用，否则开机广播会被厂商拦截（用下面的入口去设置）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(enterIndex = 3) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("隐藏多任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "离开应用后从最近任务列表里隐藏自身。国产系统的「一键清理」主要扫最近任务，" +
+                            "列表里看不到本应用，被清掉的概率明显下降。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.hideRecents,
+                    onCheckedChange = { viewModel.setHideRecents(it) },
+                )
+            }
+            Text(
+                text = "说明：只在真正退到后台时生效（应用内切页面不会触发），网关服务不受影响，仍然在后台运行。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(enterIndex = 4) {
             StatusRow(
                 title = "通知权限",
                 detail = if (status?.notificationsGranted == true) "已允许，常驻通知可见" else "未允许，后台通知不会显示",
@@ -169,7 +214,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard(enterIndex = 3) {
+        SectionCard(enterIndex = 5) {
             Text("厂商后台管理页", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "国产系统默认会限制第三方应用后台。下面的入口会尝试直接打开厂商的后台管理页；" +
