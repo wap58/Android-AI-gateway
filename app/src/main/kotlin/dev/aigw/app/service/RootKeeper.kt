@@ -171,11 +171,9 @@ object RootKeeper {
      */
     fun verify(context: Context): Verify {
         val pid = findPid()
-        val probeOut = runRootOutput(
-            "if command -v curl >/dev/null 2>&1; then curl -s -m 3 http://127.0.0.1:$PORT/healthz; " +
-                "elif command -v wget >/dev/null 2>&1; then wget -q -T 3 -O - http://127.0.0.1:$PORT/healthz; " +
-                "else echo NO_PROBE_TOOL; fi"
-        )
+        // 探活：按 curl → wget → /dev/tcp 依次回退。
+        // 这条命令里没有引号、没有分号拼接，能避开 su 传参时的转义问题。
+        val probeOut = runRootOutput(probeCommand())
         // curl 返回 "ok"，wget 同样；探测工具缺失则输出 NO_PROBE_TOOL
         val probeWorks = probeOut.isNotBlank() && probeOut != "NO_PROBE_TOOL"
         val dirs = serviceDirs().filter { dir ->
@@ -192,9 +190,17 @@ object RootKeeper {
         )
     }
 
-    /** 探活命令的描述（自检时告诉用户用的哪条命令）。 */
-    fun probeCommand(): String =
-        "curl -s -m 3 http://127.0.0.1:$PORT/healthz → wget → /dev/tcp 依次回退"
+    /**
+     * 探活命令（curl → wget → /dev/tcp 三级回退）。
+     *
+     * 刻意不加引号、不用 `if...fi` 嵌套：这条字符串会作为 `su 0 -c` 的单个参数送达，
+     * 多层引号容易被 su 或 shell 二次解释而失效
+     * （曾出现「su 下手动跑正常、App 里却拿到空输出」）。
+     */
+    internal fun probeCommand(): String =
+        "curl -s -m 3 http://127.0.0.1:$PORT/healthz 2>/dev/null " +
+            "|| wget -q -T 3 -O - http://127.0.0.1:$PORT/healthz 2>/dev/null " +
+            "|| (echo > /dev/tcp/127.0.0.1/$PORT && echo ok) 2>/dev/null"
 
     /** 读守护日志尾部（排障用）。 */
     fun readLog(context: Context): String {

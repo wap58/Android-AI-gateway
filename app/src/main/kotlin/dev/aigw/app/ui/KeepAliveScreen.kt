@@ -278,13 +278,17 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            // 三个按钮并排会把「卸载」挤成竖排，改成两行：
+            // 第一行安装（主操作），第二行检测 + 卸载
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 ChoiceChip(
-                    if (state.rootKeeper?.ok == true) "重新安装" else "安装 Root 守护",
+                    if (state.rootKeeper?.ok == true) "重新安装守护" else "安装守护",
                     selected = false,
                 ) { viewModel.installRootKeeper() }
-                ChoiceChip("重新检测", selected = false) { viewModel.refreshRootKeeperState() }
-                ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ChoiceChip("重新检测", selected = false) { viewModel.refreshRootKeeperState() }
+                    ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
+                }
             }
         }
 
