@@ -195,7 +195,14 @@ object ShizukuBoost {
             results += probe(proxy, "Doze 白名单", "cmd deviceidle whitelist +$pkg")
             results += probe(proxy, "Standby 分级", "am set-standby-bucket --user 0 $pkg active")
             // Android 15+ 才有这个子命令，低版本会报 Unknown command —— 失败不影响其它项
-            results += probe(proxy, "后台限制等级", "am set-bg-restriction-level --user 0 $pkg unrestricted")
+            // 顺序有讲究：set-standby-bucket 会把限制等级联动改成 exempted，
+            // 所以「设为 unrestricted」必须排在它之后，否则会被覆盖回去。
+            // 设完立即回读确认，避免「命令返回成功但实际没变」的假象。
+            results += probeAndConfirm(
+                proxy, "后台限制等级",
+                "am set-bg-restriction-level --user 0 $pkg unrestricted",
+                "am get-bg-restriction-level --user 0 $pkg",
+            ) { value -> value == "unrestricted" || value == "exempted" }
             results += probe(proxy, "休眠豁免", "am set-inactive --user 0 $pkg false")
             results += probe(proxy, "省流量白名单", "cmd netpolicy add restrict-background-whitelist $uid")
         }
@@ -236,9 +243,17 @@ object ShizukuBoost {
             )
 
             val restriction = proxy.exec("am get-bg-restriction-level --user 0 $pkg").trim()
+            // 注意两个「好」取值：
+            // - unrestricted：我们主动设置的
+            // - exempted：进了 Doze 白名单后系统自动给的（比 unrestricted 更宽）
+            // 只认 unrestricted 会把已经豁免的应用误报成失败。
+            // adaptive_bucket / restricted_bucket / background_restricted / hibernation 才算不通过。
+            val restrictionOk = restriction.isEmpty() ||
+                restriction == "unrestricted" ||
+                restriction == "exempted"
             items += Report.Item(
                 "后台限制等级",
-                restriction.isEmpty() || restriction == "unrestricted",
+                restrictionOk,
                 if (restriction.isEmpty()) "设备不支持该命令" else "当前=$restriction",
             )
         }
@@ -287,6 +302,32 @@ object ShizukuBoost {
             out.contains("not found", true) ||
             out.contains("Permission denied", true)
         return Report.Item(name, !failed, if (failed) out.take(150) else "已执行")
+    }
+
+    /**
+     * 执行设置命令并回读确认，杜绝「命令没报错但值没变」的假成功。
+     *
+     * [confirm] 判断回读到的值是否算达标。
+     */
+    private fun probeAndConfirm(
+        proxy: Exec,
+        name: String,
+        setCmd: String,
+        getCmd: String,
+        confirm: (String) -> Boolean,
+    ): Report.Item {
+        val setOut = runCatching { proxy.exec(setCmd) }.getOrElse { e ->
+            return Report.Item(name, false, "执行失败：${e.message?.take(100)}")
+        }.trim()
+        if (setOut.contains("Error:", true) || setOut.contains("Exception", true)) {
+            return Report.Item(name, false, setOut.take(150))
+        }
+        val actual = runCatching { proxy.exec(getCmd) }.getOrDefault("").trim()
+        return if (confirm(actual)) {
+            Report.Item(name, true, "已执行（当前=$actual）")
+        } else {
+            Report.Item(name, false, "已执行但当前仍为「$actual」")
+        }
     }
 
     private fun withProxy(context: Context, block: (Exec) -> Unit) {
