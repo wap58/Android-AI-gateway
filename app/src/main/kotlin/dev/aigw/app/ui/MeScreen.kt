@@ -146,7 +146,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
         EditorialGroupHeader("03", "架构关于 · ABOUT THE ENGINE")
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
-                text = "ai-gateway · 本地 OpenAI 兼容网关",
+                text = "天元鼎 · 本地 OpenAI 兼容网关",
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(

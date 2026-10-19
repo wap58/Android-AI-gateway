@@ -91,7 +91,7 @@ fun HomeScreen(
     }
 
     PageScaffold(
-        title = "ai-gateway",
+        title = "天元鼎",
         subtitle = "本地 OpenAI 兼容网关",
         actions = { StatusChip(state.running) },
     ) {

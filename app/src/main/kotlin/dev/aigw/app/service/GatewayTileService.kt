@@ -59,7 +59,7 @@ class GatewayTileService : TileService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             tile.subtitle = subtitle
         } else {
-            tile.label = if (subtitle != null) "AI 网关 · $subtitle" else "AI 网关"
+            tile.label = if (subtitle != null) "天元鼎 · $subtitle" else "天元鼎"
         }
         tile.updateTile()
     }
