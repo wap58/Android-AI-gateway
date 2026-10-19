@@ -67,13 +67,13 @@ import dev.aigw.core.provider.RoutedModel
 
 /** 模型页：汇总所有供应商的模型（id 带 `provider/` 前缀），按供应商分组展示与流式更新。 */
 @Composable
-fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
+fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     // 按 routePrefix 分组：区域型供应商（如 WorkBuddy 国内与国外）各成一个分组
     val grouped = remember(state.models) { state.models.groupBy { it.routePrefix } }
     val exposure = state.modelExposure
-    // 折叠状态：记「被折叠」的分组（默认全展开）。
+    // 折叠状态：记「被展开」的分组（默认全折叠，避免一进页面就是几百行模型）。
     //
     // 用不可变 Set + rememberSaveable，而不是 SnapshotStateList：
     // 后者在保存时机（onPause / 进程回收）被 SaveableStateRegistry 读取时，
@@ -81,7 +81,7 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
     // after the snapshot was taken」——折叠的分组越多越容易撞上，表现为点折叠直接闪退。
     // 换成纯值 Set 后 save/restore 不碰快照，问题消失；读取仍在组合作用域，
     // 折叠变化会正常触发列表重建。
-    var collapsed by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    var expanded by rememberSaveable { mutableStateOf(emptySet<String>()) }
     // 测试失败原文可能很长，行内只展示截断提示，全文点开弹窗查看
     var failureDetail by remember { mutableStateOf<String?>(null) }
 
@@ -124,6 +124,7 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
         PageHeader(
             title = "模型",
             subtitle = subtitleText,
+            leading = onBack?.let { { BackButton(it) } },
             actions = {
                 ExposureToggle(
                     enabled = exposure.filterEnabled,
@@ -207,10 +208,10 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                                 .clip(MaterialTheme.shapes.large)
                                 .background(MaterialTheme.colorScheme.surface)
                                 .clickable {
-                                    collapsed = if (routePrefix in collapsed) {
-                                        collapsed - routePrefix
+                                    expanded = if (routePrefix in expanded) {
+                                        expanded - routePrefix
                                     } else {
-                                        collapsed + routePrefix
+                                        expanded + routePrefix
                                     }
                                 }
                                 .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 12.dp),
@@ -218,8 +219,8 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Icon(
-                                imageVector = if (routePrefix in collapsed) Icons.Filled.ExpandMore else Icons.Filled.ExpandLess,
-                                contentDescription = if (routePrefix in collapsed) "展开" else "折叠",
+                                imageVector = if (routePrefix in expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                                contentDescription = if (routePrefix in expanded) "折叠" else "展开",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(18.dp),
                             )
@@ -273,8 +274,8 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel) {
                             }
                         }
                     }
-                    // 折叠的分组跳过其模型行：只渲染分组头，模型行即时收起
-                    if (routePrefix in collapsed) continue
+                    // 未展开的分组跳过其模型行：只渲染分组头
+                    if (routePrefix !in expanded) continue
                     items(models, key = { it.fullId }) { model ->
                         val testStatus = state.modelTestLatencies[model.fullId]
                         ModelRow(

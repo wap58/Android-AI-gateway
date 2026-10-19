@@ -35,4 +35,7 @@ sealed interface SubPage {
 
     /** 外观主题：明暗模式、配色方案与金色文字。 */
     data object AppearanceTheme : SubPage
+
+    /** 模型列表：从供应商页顶栏右侧进入（底栏已不设独立入口）。 */
+    data object Models : SubPage
 }

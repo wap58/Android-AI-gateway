@@ -135,7 +135,6 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("首页", Icons.Filled.Home),
     Providers("供应商", Icons.Filled.Person),
-    Models("模型", Icons.Filled.Storage),
     Logs("记录", Icons.Filled.History),
     Me("我的", Icons.Filled.Settings),
 }
@@ -178,7 +177,6 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                         onClick = {
                             subPage = null
                             tab = item
-                            if (item == Tab.Models) viewModel.ensureModelsLoaded()
                         },
                         icon = { Icon(item.icon, contentDescription = item.label) },
                         label = { Text(item.label) },
@@ -244,6 +242,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
+                SubPage.Models -> ModelsScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,
@@ -251,7 +250,6 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                     onTab = { newTab ->
                         subPage = null
                         tab = newTab
-                        if (newTab == Tab.Models) viewModel.ensureModelsLoaded()
                     },
                     onSubPage = { subPage = it },
                 )
@@ -325,8 +323,8 @@ private fun MainTabs(
                 state = state,
                 onOpen = { onSubPage(SubPage.ProviderDetail(it)) },
                 onAddCustom = { onSubPage(SubPage.CustomProviderEdit(null)) },
+                onOpenModels = { onSubPage(SubPage.Models) },
             )
-            Tab.Models -> ModelsScreen(state, viewModel)
             Tab.Logs -> LogsScreen(state, viewModel)
             Tab.Me -> MeScreen(state, viewModel, open = { onSubPage(it) })
         }

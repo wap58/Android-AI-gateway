@@ -377,6 +377,41 @@ fun BackButton(onBack: () -> Unit) {
     )
 }
 
+/**
+ * 顶栏用的方形描边图标按钮：圆角方框 + 居中图标，用于供应商页顶栏的
+ * 「模型入口」与「添加自定义」。
+ *
+ * 与 [BackButton] 的裸图标区分开：这里是明确的按钮形态（有边框、有底色），
+ * 视觉上更像可点的操作入口。
+ */
+@Composable
+fun SquareIconButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescription: String,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outline,
+                shape = RoundedCornerShape(10.dp),
+            )
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = contentDescription,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(20.dp),
+        )
+    }
+}
+
 /** 全宽描边按钮。onClick 放最后以支持尾随 lambda。 */
 @Composable
 fun OutlineActionButton(

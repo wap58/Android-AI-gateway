@@ -1598,11 +1598,21 @@ class GatewayEngine(
         /** 详细日志单条上限：环形日志每条都全量展示，太长会淹没其它日志。 */
         const val VERBOSE_LINE_LIMIT = 1500
 
-        /** `/v1/models` 单个供应商拉取模型目录的超时（秒）：上游 READ_TIMEOUT 300s 不能无限等。 */
-        const val MODELS_FETCH_TIMEOUT_SECONDS = 20L
+        /**
+         * `/v1/models` 单个供应商拉取模型目录的超时（秒）。
+         *
+         * 必须大于各家的实际读超时，否则慢的供应商会被这里判成「拉取超时」，
+         * 而它的请求其实还在跑（Trae 的 READ_TIMEOUT 是 120s，20s 的上限必然误伤）。
+         */
+        const val MODELS_FETCH_TIMEOUT_SECONDS = 150L
 
-        /** 区域型供应商：等待各区域目录拉取的预算（单个请求自身的读超时另算）。 */
-        private const val REGIONAL_FETCH_WAIT_MS = 16_000L
+        /**
+         * 区域型供应商：等待各区域目录拉取的预算（单个请求自身的读超时另算）。
+         *
+         * 区域是并发拉的，取「单区域最坏耗时」即可；给到 120s 略余量，
+         * 避免国内/国外任一区域偏慢就把整组判成超时。
+         */
+        private const val REGIONAL_FETCH_WAIT_MS = 130_000L
 
         const val CUSTOM_PREFIX = "custom:"
 

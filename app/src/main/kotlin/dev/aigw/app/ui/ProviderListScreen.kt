@@ -13,6 +13,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -36,16 +37,23 @@ fun ProviderListScreen(
     state: AppUiState,
     onOpen: (String) -> Unit,
     onAddCustom: () -> Unit,
+    onOpenModels: () -> Unit,
 ) {
     PageScaffold(
         title = "供应商",
         subtitle = "共 ${state.providers.size} 个",
         actions = {
-            Icon(
-                Icons.Filled.Add,
+            // 模型入口：底栏已不设独立 tab，改从这里进（图标方框）
+            SquareIconButton(
+                icon = Icons.Filled.Storage,
+                contentDescription = "模型",
+                onClick = onOpenModels,
+            )
+            // 添加自定义供应商（加号方框）
+            SquareIconButton(
+                icon = Icons.Filled.Add,
                 contentDescription = "添加自定义供应商",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.clickable(onClick = onAddCustom).padding(6.dp),
+                onClick = onAddCustom,
             )
         },
     ) {
