@@ -212,24 +212,30 @@ class AntigravityProvider(
             return FailedChatCall(0, e.message ?: "连接失败")
         }
         if (status !in 200..299) {
-            val errorBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
+            val (errorBody, fullyRead) = runCatching { HttpSupport.readLimitedTracked(conn.errorStream) }
+                .getOrDefault("" to false)
+            HttpSupport.release(conn, fullyRead)
             return FailedChatCall(status, errorBody)
         }
 
         val translator = OpenAiGemini.SseTranslator(newCompletionId(), model)
+        // 追踪是否读到 EOF：读到 → 连接回池复用；没读到 → 断开，避免半截 body 污染池子
+        val trackedSource = HttpSupport.tracked(conn.inputStream)
         val transformed = LineTransformStream(
-            source = conn.inputStream,
+            source = trackedSource,
             transform = { line -> translator.translate(line) },
             onFinish = { translator.close() },
         )
         if (streaming) {
-            return StreamingChatCall(status, transformed) { conn.disconnect() }
+            return StreamingChatCall(status, transformed) {
+                runCatching { transformed.close() }
+                HttpSupport.release(conn, trackedSource.eofReached)
+            }
         }
         val aggregated = try {
             OpenAiSseAggregator.aggregate(transformed, model)
         } finally {
-            conn.disconnect()
+            HttpSupport.release(conn, trackedSource.eofReached)
         }
         return AggregatedChatCall(status, aggregated)
     }
@@ -563,10 +569,16 @@ class AntigravityProvider(
 
     private fun get(url: String, accessToken: String): Pair<Int, String> {
         val conn = open(url, accessToken, null)
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 
@@ -583,10 +595,16 @@ class AntigravityProvider(
             connectTimeoutMs = connectTimeout,
             readTimeoutMs = readTimeout,
         )
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 

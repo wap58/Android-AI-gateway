@@ -149,27 +149,32 @@ class RaccoonProvider(
         model: String,
     ): ChatCall {
         if (status !in 200..299) {
-            val errorBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
+            val (errorBody, fullyRead) = runCatching { HttpSupport.readLimitedTracked(conn.errorStream) }
+                .getOrDefault("" to false)
+            HttpSupport.release(conn, fullyRead)
             return FailedChatCall(status, errorBody)
         }
 
         val contentType = conn.contentType.orEmpty()
-        val stream = conn.inputStream
+        // 追踪是否读到 EOF：读到 → 连接回池复用；没读到 → 断开，避免半截 body 污染池子
+        val trackedSource = HttpSupport.tracked(conn.inputStream)
         if (contentType.contains("event-stream", ignoreCase = true)) {
             val translator = RaccoonSseTranslator(newCompletionId(), model, nowMillis() / 1000)
             val transformed = LineTransformStream(
-                source = stream,
+                source = trackedSource,
                 transform = { line -> translator.translate(line) },
                 onFinish = { translator.close() },
             )
             if (streaming) {
-                return StreamingChatCall(status, transformed) { conn.disconnect() }
+                return StreamingChatCall(status, transformed) {
+                    runCatching { transformed.close() }
+                    HttpSupport.release(conn, trackedSource.eofReached)
+                }
             }
             val aggregated = try {
                 OpenAiSseAggregator.aggregate(transformed, model)
             } finally {
-                conn.disconnect()
+                HttpSupport.release(conn, trackedSource.eofReached)
             }
             if (OpenAiSseAggregator.isEmptyCompletion(aggregated)) {
                 return emptyUpstreamFailure(status, contentType, aggregated)
@@ -177,8 +182,9 @@ class RaccoonProvider(
             return AggregatedChatCall(status, aggregated)
         }
 
-        val text = runCatching { stream.use { HttpSupport.readLimited(it) } }.getOrDefault("")
-        conn.disconnect()
+        val (text, fullyRead) = runCatching { HttpSupport.readLimitedTracked(trackedSource) }
+            .getOrDefault("" to false)
+        HttpSupport.release(conn, fullyRead)
         if (text.isBlank()) return emptyUpstreamFailure(status, contentType, text)
         val parsed = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
             ?: return StreamFailureChatCall(
@@ -521,19 +527,31 @@ class RaccoonProvider(
 
     private fun postJson(url: String, body: String?, headers: Map<String, String>): Pair<Int, String> {
         val conn = open(url, body, headers)
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 
     private fun getJson(url: String, headers: Map<String, String>): Pair<Int, String> {
         val conn = open(url, null, headers)
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 

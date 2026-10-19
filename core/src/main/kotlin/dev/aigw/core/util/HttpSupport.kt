@@ -73,6 +73,62 @@ object HttpSupport {
         return out.toString("UTF-8")
     }
 
+    /**
+     * 释放一次上游调用占用的连接。
+     *
+     * 之所以不再无条件用 `disconnect()`：Android 的 `HttpURLConnection`（OkHttp 后端）里，
+     * `disconnect()` 会**直接把 socket 关掉并踢出连接池**，下一个请求必须重新做
+     * TCP 握手 + TLS 握手（国内 1~2 RTT，海外 3~4 RTT），全部计入首字延迟。
+     * 而 body 完整读完（EOF）后连接本来就已经回池可复用。
+     *
+     * 规则：body 读完 → 什么都不做，交给连接池；没读完（提前放弃/出错）→ 才 disconnect，
+     * 避免半截流污染池子。
+     */
+    fun release(conn: HttpURLConnection, bodyFullyConsumed: Boolean) {
+        if (bodyFullyConsumed) return
+        runCatching { conn.disconnect() }
+    }
+
+    /**
+     * 给流式响应体套一层「是否读到 EOF」的追踪，供 [streamingCloser] 判断能否复用连接。
+     */
+    fun tracked(stream: InputStream): EofTrackingStream = EofTrackingStream(stream)
+
+    /**
+     * 构造流式调用的收尾动作：[stream] 读到 EOF 时只关流（连接回池复用），
+     * 否则 disconnect。
+     */
+    fun streamingCloser(conn: HttpURLConnection, stream: EofTrackingStream): () -> Unit = {
+        runCatching { stream.close() }
+        release(conn, stream.eofReached)
+    }
+
+    /** 读取响应体，并报告是否读到 EOF（完整消费 → 连接可回池复用）。非 2xx 自动落 errorStream。 */
+    fun readResponseTracked(conn: HttpURLConnection, limit: Int = MAX_BODY_BYTES): Pair<String, Boolean> {
+        val stream = try {
+            conn.inputStream
+        } catch (_: Exception) {
+            conn.errorStream ?: return "" to false
+        }
+        return readLimitedTracked(stream, limit)
+    }
+
+    /** 限长读取，并报告 body 是否被完整消费（未因超限提前截断）。 */
+    fun readLimitedTracked(input: InputStream?, limit: Int = MAX_BODY_BYTES): Pair<String, Boolean> {
+        if (input == null) return "" to false
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) return out.toString("UTF-8") to true
+            if (out.size() + read > limit) {
+                out.write(buffer, 0, limit - out.size())
+                return out.toString("UTF-8") to false
+            }
+            out.write(buffer, 0, read)
+        }
+    }
+
     private fun configure(
         url: String,
         method: String,
@@ -99,4 +155,34 @@ object HttpSupport {
         conn.setFixedLengthStreamingMode(bytes.size)
         conn.outputStream.use { it.write(bytes) }
     }
+}
+
+/**
+ * 只追踪「是否读到过 EOF」的透传流。
+ *
+ * 流式响应结束后据此决定要不要 `disconnect()`：读到 EOF 说明上游已把 body 发完，
+ * 连接可以回池复用（省掉下次的 TCP+TLS 握手）；没到 EOF 就结束说明是提前放弃，
+ * 必须断开，否则半截 body 会污染连接池。
+ */
+class EofTrackingStream(private val delegate: InputStream) : InputStream() {
+
+    @Volatile
+    var eofReached: Boolean = false
+        private set
+
+    override fun read(): Int {
+        val b = delegate.read()
+        if (b < 0) eofReached = true
+        return b
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        val n = delegate.read(b, off, len)
+        if (n < 0) eofReached = true
+        return n
+    }
+
+    override fun available(): Int = delegate.available()
+
+    override fun close() = delegate.close()
 }

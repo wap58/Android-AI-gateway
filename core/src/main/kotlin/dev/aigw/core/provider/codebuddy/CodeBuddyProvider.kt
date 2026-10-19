@@ -125,28 +125,34 @@ class CodeBuddyProvider(
             return FailedChatCall(0, e.message ?: "连接失败")
         }
         if (status !in 200..299) {
-            val errorBody = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
+            val (errorBody, fullyRead) = runCatching { HttpSupport.readLimitedTracked(conn.errorStream) }
+                .getOrDefault("" to false)
+            HttpSupport.release(conn, fullyRead)
             return FailedChatCall(status, errorBody)
         }
 
         val contentType = conn.contentType.orEmpty()
-        val stream = conn.inputStream
+        // 追踪是否读到 EOF：读到 → 连接回池复用；没读到 → 断开，避免半截 body 污染池子
+        val trackedSource = HttpSupport.tracked(conn.inputStream)
         if (contentType.contains("event-stream", ignoreCase = true)) {
             if (streaming) {
-                val body = if (restoreNames.isEmpty()) stream else ToolNameRestoringStream(stream, restoreNames)
-                return StreamingChatCall(status, body) { conn.disconnect() }
+                val body = if (restoreNames.isEmpty()) trackedSource else ToolNameRestoringStream(trackedSource, restoreNames)
+                return StreamingChatCall(status, body) {
+                    runCatching { body.close() }
+                    HttpSupport.release(conn, trackedSource.eofReached)
+                }
             }
             val aggregated = try {
-                OpenAiSseAggregator.aggregate(stream, model)
+                OpenAiSseAggregator.aggregate(trackedSource, model)
             } finally {
-                conn.disconnect()
+                HttpSupport.release(conn, trackedSource.eofReached)
             }
             return AggregatedChatCall(status, restoreToolNames(aggregated, restoreNames))
         }
 
-        val text = runCatching { stream.use { HttpSupport.readLimited(it) } }.getOrDefault("")
-        conn.disconnect()
+        val (text, fullyRead) = runCatching { HttpSupport.readLimitedTracked(trackedSource) }
+            .getOrDefault("" to false)
+        HttpSupport.release(conn, fullyRead)
         // 200 也可能是「HTTP 200 + 业务错误码」（与 Loomy 同形）：不校验会把真实错误
         // 当成正常聚合结果，下游只会报「上游返回了空回复」，用户看不到真正原因。
         val businessCode = runCatching { JsonParser.parseString(text).asJsonObject.get("code")?.asLong }
@@ -895,10 +901,16 @@ class CodeBuddyProvider(
         headers: Map<String, String>,
     ): Pair<Int, String> {
         val conn = open(url, credential, body, headers)
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 
@@ -909,10 +921,16 @@ class CodeBuddyProvider(
         allowCompression: Boolean = false,
     ): Pair<Int, String> {
         val conn = open(url, null, null, headers, method = "GET", readTimeoutMs = readTimeoutMs, allowCompression = allowCompression)
+        var fullyRead = false
         return try {
-            conn.responseCode to HttpSupport.readBody(conn)
+            val status = conn.responseCode
+            val (text, complete) = runCatching { HttpSupport.readResponseTracked(conn) }
+                .getOrDefault("" to false)
+            fullyRead = complete
+            status to text
         } finally {
-            conn.disconnect()
+            // 读完（EOF）→ 连接回池；提前中断 → 断开，避免半截 body 污染池子
+            HttpSupport.release(conn, fullyRead)
         }
     }
 

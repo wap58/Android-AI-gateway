@@ -77,8 +77,9 @@ class CustomProvider(
             return FailedChatCall(0, e.message ?: "连接失败")
         }
         if (status !in 200..299) {
-            val body = runCatching { HttpSupport.readLimited(conn.errorStream) }.getOrDefault("")
-            conn.disconnect()
+            val (body, fullyRead) = runCatching { HttpSupport.readLimitedTracked(conn.errorStream) }
+                .getOrDefault("" to false)
+            HttpSupport.release(conn, fullyRead)
             return FailedChatCall(status, body)
         }
 
@@ -86,12 +87,15 @@ class CustomProvider(
         val stream = conn.inputStream
         if (contentType.contains("event-stream", ignoreCase = true)) {
             if (streaming) {
-                return StreamingChatCall(status, stream) { conn.disconnect() }
+                // 追踪是否读到 EOF：读到 → 连接回池复用（下次请求省掉 TCP+TLS 握手）；没读到 → 断开
+                val tracked = HttpSupport.tracked(stream)
+                return StreamingChatCall(status, tracked, HttpSupport.streamingCloser(conn, tracked))
             }
             val aggregated = try {
                 OpenAiSseAggregator.aggregate(stream, model)
             } finally {
-                conn.disconnect()
+                // 聚合读到了 EOF，连接可以复用
+                HttpSupport.release(conn, true)
             }
             if (OpenAiSseAggregator.isEmptyCompletion(aggregated)) {
                 return emptyUpstreamFailure(status, contentType, aggregated)
@@ -99,8 +103,10 @@ class CustomProvider(
             return AggregatedChatCall(status, aggregated)
         }
 
-        val text = runCatching { stream.use { HttpSupport.readLimited(it) } }.getOrDefault("")
-        conn.disconnect()
+        val (text, fullyRead) = runCatching {
+            stream.use { HttpSupport.readLimitedTracked(it) }
+        }.getOrDefault("" to false)
+        HttpSupport.release(conn, fullyRead)
         // 200 但空 body（代理吞响应、上游静默拒绝）：当成功会让客户端「输出完成却什么都没有」
         if (text.isBlank()) return emptyUpstreamFailure(status, contentType, text)
         // 非流式响应必须是 OpenAI completion；HTML 登录页之类不能当回复透传
@@ -216,8 +222,12 @@ class CustomProvider(
                 return emptyList()
             }
             return try {
-                if (conn.responseCode !in 200..299) return emptyList()
-                val text = HttpSupport.readLimited(conn.inputStream)
+                if (conn.responseCode !in 200..299) {
+                    HttpSupport.release(conn, false)
+                    return emptyList()
+                }
+                val (text, fullyRead) = HttpSupport.readLimitedTracked(conn.inputStream)
+                HttpSupport.release(conn, fullyRead)
                 val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
                     ?: return emptyList()
                 val data = obj.arrayOrNull("data") ?: return emptyList()
@@ -227,8 +237,6 @@ class CustomProvider(
                 }
             } catch (_: Exception) {
                 emptyList()
-            } finally {
-                conn.disconnect()
             }
         }
 

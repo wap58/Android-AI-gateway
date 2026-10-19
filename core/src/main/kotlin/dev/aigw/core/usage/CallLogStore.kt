@@ -83,8 +83,37 @@ class CallLogStore(
      * 目录由调用方提供（App 传 cacheDir，可被系统回收；CLI 传数据目录）。
      */
     private val spillDir: File? = null,
+    /**
+     * 是否把落盘操作丢到后台单线程队列。
+     *
+     * App 传 true：加密存储的 `commit()` 是「全量重新加密 XML + fsync」，一次请求结束要写
+     * 3 个键（记录/累计/当日），攒到 100 条后单次能到几百毫秒，这段时间原本卡在
+     * 请求收尾路径上（客户端看到的是「回复完了但连接迟迟不结束」）。
+     * 内存态（[records]/[totalAgg]/[daily]）仍然同步更新，`list()` 立刻可见；
+     * CLI 与测试保持 false，行为与原先完全一致。
+     */
+    private val asyncWrites: Boolean = false,
 ) {
     private val records = ArrayDeque<CallRecord>()
+
+    /** 后台落盘队列：单线程 + 有界队列，写入顺序与提交顺序一致。 */
+    private val writeExecutor: java.util.concurrent.ExecutorService? = if (asyncWrites) {
+        java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "calllog-writer").apply { isDaemon = true }
+        }
+    } else {
+        null
+    }
+
+    /** 落盘统一入口：异步模式下排队，同步模式下直接执行（异常照旧抛出）。 */
+    private fun persist(action: () -> Unit) {
+        val executor = writeExecutor
+        if (executor == null) {
+            action()
+            return
+        }
+        runCatching { executor.execute { runCatching { action() } } }
+    }
 
     /** 累计聚合：独立于调用记录持久化。记录有容量淘汰与过期清理，直接从记录里现算「累计」只会等于最近几条。 */
     private var totalAgg = UsageStats()
@@ -105,20 +134,31 @@ class CallLogStore(
             responseBody = record.responseBody.take(MAX_SUMMARY_CHARS),
             rawResponse = record.rawResponse.take(MAX_SUMMARY_CHARS),
         )
-        spillOverflows(record)
+        spillOverflowsAsync(record)
         records.addFirst(excerpt)
-        store.write(keyOf(record.id), excerpt.toJson().toString())
+        // 序列化在锁内、当前线程完成（快照语义正确），只有真正的落盘被推迟
+        val recordJson = excerpt.toJson().toString()
+        val recordKey = keyOf(record.id)
+        persist { store.write(recordKey, recordJson) }
+        val evictedKeys = ArrayList<String>()
         while (records.size > capacity) {
             val evicted = records.removeLast()
-            store.delete(keyOf(evicted.id))
+            evictedKeys.add(keyOf(evicted.id))
             deleteSpill(evicted.id)
         }
+        if (evictedKeys.isNotEmpty()) {
+            val keys = evictedKeys.toList()
+            persist { for (key in keys) store.delete(key) }
+        }
         totalAgg = totalAgg + record
-        store.write(TOTAL_KEY, totalAgg.toJson().toString())
+        val totalJson = totalAgg.toJson().toString()
+        persist { store.write(TOTAL_KEY, totalJson) }
         val day = startOfDay(record.startedAtMillis)
         val updated = (daily[day] ?: UsageStats()) + record
         daily[day] = updated
-        store.write(dayKeyOf(day), updated.toJson().toString())
+        val dayJson = updated.toJson().toString()
+        val dayKey = dayKeyOf(day)
+        persist { store.write(dayKey, dayJson) }
         pruneDaily()
     }
 
@@ -362,6 +402,20 @@ class CallLogStore(
      * 把超出摘要长度的完整原文溢写到缓存目录（每字段一个文件，单文件上限 [MAX_SPILL_CHARS]）。
      * 只在确实有超出时才落盘；写入失败静默降级为「详情页只看摘要」。
      */
+    /**
+     * 完整原文溢出到缓存目录：这是纯本地文件写（单条最多 3×512K），
+     * 同步模式下直接做；异步模式下排到同一个落盘队列，不占用请求收尾线程。
+     */
+    private fun spillOverflowsAsync(record: CallRecord) {
+        if (spillDir == null) return
+        val executor = writeExecutor
+        if (executor == null) {
+            spillOverflows(record)
+            return
+        }
+        runCatching { executor.execute { runCatching { spillOverflows(record) } } }
+    }
+
     private fun spillOverflows(record: CallRecord) {
         val dir = spillDir ?: return
         spillField(dir, record.id, CallTextField.REQUEST, record.requestBody)

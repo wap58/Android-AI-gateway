@@ -1,18 +1,27 @@
 package dev.aigw.core.provider.trae
 
+import dev.aigw.core.util.EofTrackingStream
+import dev.aigw.core.util.HttpSupport
 import java.io.InputStream
 
-/** 一次对话调用的上游响应：2xx 时 [stream] 非空，否则 [errorBody] 非空。 */
+/**
+ * 一次对话调用的上游响应：2xx 时 [stream] 非空，否则 [errorBody] 非空。
+ *
+ * 关闭语义分两种：流读到 EOF 说明上游已发完 body，连接交回连接池复用（省掉下轮的
+ * TCP+TLS 握手）；没读到 EOF（提前放弃/解析出错）才 disconnect，避免半截 body 污染池子。
+ */
 class TraeChatCall(
     val status: Int,
     val stream: InputStream?,
     val errorBody: String,
-    /** 非流式响应（错误体 / 非 SSE 200）持有的连接，关闭时一并断开，避免 socket 泄漏。 */
+    /** 持有的连接；[stream] 为 null（错误体/非 SSE 200）时关闭一并断开。 */
     private val conn: java.net.HttpURLConnection? = null,
 ) : AutoCloseable {
     override fun close() {
-        stream?.close()
-        conn?.disconnect()
+        val tracked = stream as? EofTrackingStream
+        runCatching { stream?.close() }
+        if (conn == null) return
+        HttpSupport.release(conn, tracked?.eofReached == true)
     }
 }
 
@@ -54,7 +63,7 @@ class TraeChatClient(
                 conn,
             )
         }
-        return TraeChatCall(status, conn.inputStream, "")
+        return TraeChatCall(status, HttpSupport.tracked(conn.inputStream), "")
     }
 
     /** 拉取模型目录（`get_detail_param`）。 */
@@ -68,15 +77,22 @@ class TraeChatClient(
         ) { TraeHeaders.solo(it, account, version, stream = false) }
 
         val status = conn.responseCode
+        var fullyRead = false
         val raw = try {
-            TraeHttp.readBody(conn)
+            val (text, complete) = HttpSupport.readLimitedTracked(conn.errorStreamOrInput(status))
+            fullyRead = complete
+            text
         } finally {
-            // 目录是非流式请求：读完就断开，异常路径也不能漏
-            conn.disconnect()
+            // 目录是非流式请求：读完就交回连接池，异常路径也不能漏
+            HttpSupport.release(conn, fullyRead)
         }
         if (status >= 400) {
             throw TraeHttpException(status, TraeErrors.fromStatus(status, raw), raw, TraeErrors.extractCode(raw))
         }
         return TraePayloadModels.parse(raw)
     }
+
+    /** 2xx 读 inputStream，非 2xx 读 errorStream。 */
+    private fun java.net.HttpURLConnection.errorStreamOrInput(status: Int): InputStream? =
+        if (status in 200..299) runCatching { inputStream }.getOrNull() else runCatching { errorStream }.getOrNull()
 }

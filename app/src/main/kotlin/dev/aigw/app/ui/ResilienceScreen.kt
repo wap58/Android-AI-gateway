@@ -130,6 +130,17 @@ private fun ConcurrencyComponent(config: ConcurrencyConfig, onOpenEdit: () -> Un
         ParamRow("排队超时", "${config.queueTimeoutMs} 毫秒")
         Spacer(Modifier.height(4.dp))
         OutlineActionButton("修改并发参数") { onOpenEdit() }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            text = if (config.maxPerAccount == 1) {
+                "当前为「单账号串行」（默认值，最保守）：同一账号的第 2 个请求会排队等待，" +
+                    "多客户端同时用时会明显变慢。上游不吃并发风控的话，改成 0（不限）会快很多。"
+            } else {
+                "在途指「已向上游发起、尚未返回」的请求；数值越宽松越快，但上游风控风险越高。"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

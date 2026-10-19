@@ -36,6 +36,9 @@ class AiGatewayApp : Application() {
             // 完整原文溢出到缓存目录（系统空间不足时可回收）：加密存储只留 8K 摘要，
             // 详情页打开时按记录 id 回读全文
             spillDir = java.io.File(cacheDir, "call-fulltext"),
+            // 记录落盘改走后台队列：加密存储 commit() 是「全量重加密 + fsync」，
+            // 一次请求要写 3 个键，同步做会把几百毫秒压在请求收尾上
+            asyncCallLogWrites = true,
         )
         engine = created
         // 「隐藏多任务」保活：应用真正退到后台时把自己从最近任务列表移除。

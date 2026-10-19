@@ -40,6 +40,19 @@ class GatewayHttpServer(
 
     fun listeningAddress(): String = (hostname ?: "0.0.0.0") + ":" + listeningPort
 
+    /**
+     * 每个客户端连接建立后立刻关掉 Nagle 算法。
+     *
+     * NanoHTTPD 2.3.1 全程没有 `setTcpNoDelay`，Java `Socket` 默认 `TCP_NODELAY=false`：
+     * SSE 每帧都是几十字节的小包，开 Nagle 时内核会把小包攒着等 ACK，
+     * 客户端看到的就是「一卡一卡」地出字（loopback 上不明显，局域网/跨设备非常明显）。
+     * Go 版 `net/http` 的 Dialer 默认是 `SetNoDelay(true)`，这就是两者体感差的主要来源。
+     */
+    override fun createClientHandler(finalAccept: java.net.Socket, inputStream: java.io.InputStream): NanoHTTPD.ClientHandler {
+        runCatching { finalAccept.tcpNoDelay = true }
+        return super.createClientHandler(finalAccept, inputStream)
+    }
+
     override fun serve(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         val uri = session.uri.trimEnd('/').ifEmpty { "/" }
         val response = try {
@@ -665,7 +678,8 @@ class GatewayHttpServer(
                             sawData = true
                             if (line.removePrefix("data:").trim() == "[DONE]") sawDone = true
                         }
-                        rawLines.append(line + "\n")
+                        rawLines.append(line)
+                        rawLines.append("\n")
                         batch.append(line).append("\n\n")
                         flushBatch(batch, writer)
                         if (!firstChunkLogged && line.startsWith("data:")) {
@@ -962,6 +976,9 @@ class GatewayHttpServer(
         if (!line.startsWith("data:")) return null
         val payload = line.removePrefix("data:").trim()
         if (payload.isEmpty() || payload == "[DONE]") return null
+        // 快速预检：这一帧若连任何可统计字段的名字都不含，就不必付 JSON 解析的代价。
+        // 首帧（role）、finish 帧、心跳帧都走这条路径——长回复里这类帧并不少。
+        if (!hasStatableField(payload)) return null
         val obj = JsonParser.parseString(payload).takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val delta = obj.arrayOrNull("choices")?.firstOrNull()?.asObjectOrNull()?.objOrNull("delta")
         val usage = obj.objOrNull("usage")
@@ -982,6 +999,16 @@ class GatewayHttpServer(
             pointsConsumed = if (payload.contains("points")) pointsConsumedOf(obj, usage) else 0L,
         )
     }
+
+    /** [parseChunk] 的零分配预检：不含这些字段名就不需要解析。 */
+    private fun hasStatableField(payload: String): Boolean =
+        payload.contains("\"content\"") ||
+            payload.contains("\"tool_calls\"") ||
+            payload.contains("\"images\"") ||
+            payload.contains("\"reasoning") ||
+            payload.contains("\"usage\"") ||
+            payload.contains("\"points\"") ||
+            payload.contains("\"error\"")
 
     private data class ChunkInfo(
         val usage: JsonObject?,
@@ -1137,10 +1164,17 @@ internal class ChunkWriter(
     @Synchronized
     fun write(bytes: ByteArray) {
         if (finished || bytes.isEmpty()) return
-        out.write(Integer.toHexString(bytes.size).toByteArray(StandardCharsets.US_ASCII))
-        out.write(CRLF)
-        out.write(bytes)
-        out.write(CRLF)
+        // 整帧一次写出：原先拆成「长度行 / CRLF / 内容 / CRLF」四次 write，
+        // 每次都是一次 write 系统调用，叠加小包会把延迟放大。这里合并成一帧。
+        val sizeLine = Integer.toHexString(bytes.size).toByteArray(StandardCharsets.US_ASCII)
+        val frame = ByteArray(sizeLine.size + 2 + bytes.size + 2)
+        System.arraycopy(sizeLine, 0, frame, 0, sizeLine.size)
+        frame[sizeLine.size] = CR
+        frame[sizeLine.size + 1] = LF
+        System.arraycopy(bytes, 0, frame, sizeLine.size + 2, bytes.size)
+        frame[frame.size - 2] = CR
+        frame[frame.size - 1] = LF
+        out.write(frame)
         out.flush()
         lastWriteAtMillis = nowMillis()
     }
@@ -1157,7 +1191,8 @@ internal class ChunkWriter(
     }
 
     companion object {
-        private val CRLF = "\r\n".toByteArray(StandardCharsets.US_ASCII)
+        private const val CR = '\r'.code.toByte()
+        private const val LF = '\n'.code.toByte()
         private val ZERO_CHUNK = "0\r\n\r\n".toByteArray(StandardCharsets.US_ASCII)
     }
 }

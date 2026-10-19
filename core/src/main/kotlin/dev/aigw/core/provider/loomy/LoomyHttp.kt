@@ -1,5 +1,6 @@
 package dev.aigw.core.provider.loomy
 
+import dev.aigw.core.util.EofTrackingStream
 import dev.aigw.core.util.HttpSupport
 import java.io.InputStream
 import java.net.HttpURLConnection
@@ -26,6 +27,10 @@ internal object LoomyHttp {
     /** 读取响应体（非 2xx 时自动落到 errorStream）。 */
     fun readBody(conn: HttpURLConnection, limit: Int = MAX_BODY_BYTES): String =
         HttpSupport.readBody(conn, limit)
+
+    /** 读取响应体，并报告是否读到 EOF（完整消费 → 连接可回池复用）。 */
+    fun readBodyTracked(conn: HttpURLConnection, limit: Int = MAX_BODY_BYTES): Pair<String, Boolean> =
+        HttpSupport.readResponseTracked(conn, limit)
 }
 
 /**
@@ -33,6 +38,8 @@ internal object LoomyHttp {
  *
  * 网络层失败（连不上/超时）也会被包成 [LoomyApiException]（kind = NETWORK），
  * 让上层只需要处理一种异常类型。
+ *
+ * body 读完后连接**不主动 disconnect**：交给连接池复用，省掉下次的 TCP+TLS 握手。
  */
 internal fun httpJson(
     url: String,
@@ -47,13 +54,16 @@ internal fun httpJson(
     } catch (e: Exception) {
         throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
     }
+    var fullyRead = false
     return try {
         val status = conn.responseCode
-        status to LoomyHttp.readBody(conn)
+        val (text, complete) = LoomyHttp.readBodyTracked(conn)
+        fullyRead = complete
+        status to text
     } catch (e: Exception) {
         throw LoomyApiException(0, LoomyErrorKind.NETWORK, e.message.orEmpty())
     } finally {
-        conn.disconnect()
+        HttpSupport.release(conn, fullyRead)
     }
 }
 
@@ -75,8 +85,10 @@ class LoomyStreamCall internal constructor(
     val isEventStream: Boolean get() = contentType.contains("text/event-stream", ignoreCase = true)
 
     fun close() {
+        val tracked = stream as? EofTrackingStream
         runCatching { stream?.close() }
-        runCatching { connection.disconnect() }
+        // 读到 EOF 才复用连接；提前放弃时断开，避免半截 body 污染池子
+        HttpSupport.release(connection, tracked?.eofReached == true)
     }
 }
 
@@ -100,9 +112,10 @@ internal fun openStreamCall(
     }
     val contentType = conn.contentType.orEmpty()
     if (status !in 200..299) {
-        val errorBody = runCatching { LoomyHttp.readBody(conn) }.getOrDefault("")
-        conn.disconnect()
+        val (errorBody, fullyRead) = runCatching { LoomyHttp.readBodyTracked(conn) }
+            .getOrDefault("" to false)
+        HttpSupport.release(conn, fullyRead)
         return LoomyStreamCall(status, errorBody, null, contentType, conn)
     }
-    return LoomyStreamCall(status, "", conn.inputStream, contentType, conn)
+    return LoomyStreamCall(status, "", HttpSupport.tracked(conn.inputStream), contentType, conn)
 }

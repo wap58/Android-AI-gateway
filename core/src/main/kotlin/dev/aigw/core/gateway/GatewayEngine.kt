@@ -182,10 +182,17 @@ class GatewayEngine(
     preloadCallLogs: Boolean = true,
     /** 完整原文溢出目录：加密存储只留每字段 8K 摘要，超出部分写这里供详情页回读；null 时仅摘要。 */
     spillDir: java.io.File? = null,
+    /** 调用记录落盘改走后台队列（App 传 true；CLI/测试保持同步）。 */
+    asyncCallLogWrites: Boolean = false,
 ) {
     val settingsRepository = SettingsRepository(store)
     val pool = AccountPool(store, nowMillis)
-    val callLogStore = CallLogStore(store, preloadOnConstruction = preloadCallLogs, spillDir = spillDir)
+    val callLogStore = CallLogStore(
+        store,
+        preloadOnConstruction = preloadCallLogs,
+        spillDir = spillDir,
+        asyncWrites = asyncCallLogWrites,
+    )
     val requestLog = RequestLog(store, nowMillis = nowMillis)
     val registry = ProviderRegistry()
 
@@ -464,6 +471,8 @@ class GatewayEngine(
 
     /** 设置变更后让 provider 重建内部客户端（如 Trae 的版本号）。 */
     private fun reconfigureProviders() {
+        // 供应商配置变了，模型目录缓存必须一并失效，否则 /v1/models 会继续吐旧清单
+        invalidateModelsCache()
         for (provider in registry.all()) {
             (provider as? Reconfigurable)?.reconfigure()
         }
@@ -534,8 +543,9 @@ class GatewayEngine(
 
     /** 重新读取自定义供应商配置并登记（增删改后调用）。 */
     fun reloadCustomProviders() {
-        // provider 集合即将变化，先失效域名表缓存（见 [providerHosts]）
+        // provider 集合即将变化，先失效域名表缓存（见 [providerHosts]）与模型目录缓存
         providerHostsCache = null
+        invalidateModelsCache()
         // 先摘掉已登记的，避免删掉的供应商还留在列表里
         for (provider in registry.all()) {
             if (provider.id.startsWith(CUSTOM_PREFIX)) registry.unregister(provider.id)
@@ -1151,7 +1161,34 @@ class GatewayEngine(
     }
 
     /** 阻塞聚合版：HTTP `/v1/models`、CLI 等需要一次性完整列表的场景使用。 */
-    fun models(): List<RoutedModel> = modelsStreaming { }.models
+    fun models(): List<RoutedModel> = cachedModels()
+
+    /**
+     * [models] 的带 TTL 缓存版本。
+     *
+     * 每次 `/v1/models` 都真打一遍所有上游目录（每家有各自的读超时，实测设备上单次可达 20s+），
+     * 而客户端（各种 Web UI / SDK）往往只请求一次、后面反复复用 —— 每次都全量重拉纯属浪费。
+     * 5 分钟内复用同一份结果；模型页的「刷新」按钮走 [modelsStreaming] 的 forceRefresh，
+     * 不受此缓存影响。
+     */
+    private fun cachedModels(): List<RoutedModel> {
+        val now = nowMillis()
+        val cached = modelsCache
+        if (cached != null && now - cached.atMillis < MODELS_CACHE_TTL_MS) return cached.models
+        val fresh = modelsStreaming { }.models
+        modelsCache = ModelsCache(fresh, now)
+        return fresh
+    }
+
+    /** 丢弃模型目录缓存（供应商配置/账号变更后调用）。 */
+    fun invalidateModelsCache() {
+        modelsCache = null
+    }
+
+    private class ModelsCache(val models: List<RoutedModel>, val atMillis: Long)
+
+    @Volatile
+    private var modelsCache: ModelsCache? = null
 
     /**
      * 拉取单个供应商的模型目录（id 带 `provider/` 前缀；区域型供应商按区域拆成多组）。
@@ -1605,6 +1642,9 @@ class GatewayEngine(
          * 而它的请求其实还在跑（Trae 的 READ_TIMEOUT 是 120s，20s 的上限必然误伤）。
          */
         const val MODELS_FETCH_TIMEOUT_SECONDS = 150L
+
+        /** 模型目录缓存有效期：客户端反复请求 /v1/models 时不再每次全量打上游。 */
+        private const val MODELS_CACHE_TTL_MS = 5 * 60 * 1000L
 
         /**
          * 区域型供应商：等待各区域目录拉取的预算（单个请求自身的读超时另算）。
