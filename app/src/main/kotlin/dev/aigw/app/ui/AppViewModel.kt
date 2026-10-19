@@ -766,6 +766,117 @@ class AppViewModel(
         }
     }
 
+    // ------------------------------------------------------------------ Root 守护
+
+    /**
+     * 一键安装 Root 守护：装完立刻自检，确认它**真的在工作**而不只是「装上了」。
+     *
+     * 自检三项：守护进程活着、探活命令可用、开机目录铺对。
+     */
+    fun installRootKeeper() = action {
+        val r = dev.aigw.app.service.RootKeeper.install(app)
+        val v = runCatching { dev.aigw.app.service.RootKeeper.verify(app) }.getOrNull()
+
+        when (r) {
+            is dev.aigw.app.service.RootKeeper.Result.NoRoot -> r.detail
+            is dev.aigw.app.service.RootKeeper.Result.Failed -> r.detail
+            else -> {
+                val head = if (r is dev.aigw.app.service.RootKeeper.Result.Installed) {
+                    "守护已启动（PID ${r.pid}）"
+                } else {
+                    "守护已在运行"
+                }
+                if (v == null) {
+                    "$head；自检未执行"
+                } else {
+                    buildString {
+                        append(head)
+                        append("\n进程：").append(if (v.processAlive) "在跑（${v.pid}）" else "未启动 ✗")
+                        append("\n探活：").append(
+                            when {
+                                v.probeWorks -> "可用（返回「${v.probeOutput}」）"
+                                else -> "不可用 ✗（输出「${v.probeOutput.ifEmpty { "空" }}」）"
+                            }
+                        )
+                        append("\n开机目录：").append(
+                            if (v.registeredDirs.isEmpty()) "无（无框架环境，重启后需重开应用）"
+                            else v.registeredDirs.joinToString("、")
+                        )
+                        if (!v.ok) append("\n⚠ 有未通过项，守护不会真正生效")
+                    }
+                }
+            }
+        }
+    }
+
+    /** 单独跑一次自检（不安装），用于确认已在跑的守护是否健康。 */
+    fun verifyRootKeeper() = action {
+        val v = dev.aigw.app.service.RootKeeper.verify(app)
+        buildString {
+            append("Root 守护自检：").append(if (v.ok) "通过" else "未通过")
+            append("\n进程：").append(if (v.processAlive) "在跑（${v.pid}）" else "未启动 ✗")
+            append("\n探活：").append(
+                if (v.probeWorks) "可用（返回「${v.probeOutput}」）"
+                else "不可用 ✗（输出「${v.probeOutput.ifEmpty { "空" }}」）"
+            )
+            append("\n开机目录：").append(
+                if (v.registeredDirs.isEmpty()) "无（无框架环境，重启后需重开应用）"
+                else v.registeredDirs.joinToString("、")
+            )
+            if (v.logTail.isNotEmpty()) append("\n最近日志：").append(v.logTail.take(200))
+        }
+    }
+
+    /** 卸载 Root 守护。 */
+    fun uninstallRootKeeper() = action {
+        when (val r = dev.aigw.app.service.RootKeeper.uninstall(app)) {
+            dev.aigw.app.service.RootKeeper.UninstallResult.Done -> "Root 守护已卸载。"
+            is dev.aigw.app.service.RootKeeper.UninstallResult.NoRoot -> r.detail
+        }
+    }
+
+    // ------------------------------------------------------------------ Shizuku 增强
+
+    /**
+     * 一键把系统压制开关调到最有利（Doze 白名单 / standby 分级 / 休眠豁免等）。
+     * 装完立刻自检读数，证明系统真的接受了。
+     */
+    fun shizukuBoost() = action {
+        val report = dev.aigw.app.service.ShizukuBoost.boost(app)
+        val inspect = dev.aigw.app.service.ShizukuBoost.inspect(app)
+        buildString {
+            append("Shizuku 增强：${report.okCount}/${report.items.size} 项已执行")
+            report.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
+            append("\n\n自检（当前真实状态）：")
+            inspect.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
+            if (!inspect.allOk) append("\n⚠ 有未通过项，需手动在系统设置里处理")
+        }
+    }
+
+    /** 单独自检：不修改任何东西，只读当前状态。 */
+    fun shizukuInspect() = action {
+        val inspect = dev.aigw.app.service.ShizukuBoost.inspect(app)
+        buildString {
+            append("Shizuku 状态自检：").append(if (inspect.allOk) "全部通过" else "${inspect.okCount}/${inspect.items.size} 通过")
+            inspect.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
+        }
+    }
+
+    /** 请求 Shizuku 授权（弹系统确认框）。 */
+    fun shizukuRequestPermission() {
+        dev.aigw.app.service.ShizukuBoost.requestPermission()
+        notice("请在 Shizuku 的弹窗里点「允许」")
+    }
+
+    /** 撤销 Shizuku 增强。 */
+    fun shizukuRevert() = action {
+        val report = dev.aigw.app.service.ShizukuBoost.revert(app)
+        buildString {
+            append("已撤销 ${report.okCount}/${report.items.size} 项")
+            report.items.forEach { append("\n").append(it.name).append("：").append(if (it.ok) "已恢复" else it.detail) }
+        }
+    }
+
     /**
      * 授权返回后重新应用悬浮窗：仅在网关服务运行时补显示（开关开着且未在显示）。
      */

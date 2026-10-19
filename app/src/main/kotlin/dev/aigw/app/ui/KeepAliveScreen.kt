@@ -7,6 +7,7 @@ import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material3.MaterialTheme
@@ -14,6 +15,10 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -47,6 +52,19 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.reapplyOverlayIfEnabled()
                 viewModel.refresh()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // Shizuku 状态必须响应式：用户在 Shizuku App 里授权/断开会立刻反映到本页。
+    // 直接调用 currentState() 拿到的是瞬时值，不会触发重绘。
+    var shizukuState by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.currentState()) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                shizukuState = dev.aigw.app.service.ShizukuBoost.currentState()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -174,8 +192,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
                         text = "本应用自身全部功能都不需要 root：悬浮窗、开机自启、隐藏多任务走的是系统公开权限。" +
-                            "只有「开机即拉起 + 被杀自动复活」这一层需要 root——它是外部脚本，放在 " +
-                            "/data/adb/service.d/ 由 root 域执行，应用内无法安装。",
+                            "只有「被杀自动复活」这一层需要 root，点下面的按钮即可一键安装，无需手动操作。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -188,13 +205,77 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 )
             }
             Text(
-                text = "脚本：tyd_keepalive.sh（探活 http://127.0.0.1:${state.port}/healthz）",
+                text = "守护脚本每 20 秒探活一次 http://127.0.0.1:${state.port}/healthz，连续 2 次无响应就重新拉起网关服务。" +
+                    "兼容 Magisk / KernelSU / APatch 及纯 su 环境。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                ChoiceChip("安装 Root 守护", selected = false) { viewModel.installRootKeeper() }
+                ChoiceChip("卸载", selected = false) { viewModel.uninstallRootKeeper() }
+            }
         }
 
+        // Shizuku 增强：无 Root 也能把系统的压制等级调低（Doze 白名单、standby 分级等）
         SectionCard(enterIndex = 5) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Shizuku 增强（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "无需 Root。用 Shizuku 的 adb 身份把系统压制开关一次性调到最有利：" +
+                            "加入 Doze 白名单（深度睡眠豁免）、standby 提到 active、解除休眠冻结。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Text(
+                    text = when (shizukuState) {
+                        dev.aigw.app.service.ShizukuBoost.State.Ready -> "已就绪"
+                        dev.aigw.app.service.ShizukuBoost.State.NeedPermission -> "待授权"
+                        dev.aigw.app.service.ShizukuBoost.State.NotRunning -> "未连接"
+                        is dev.aigw.app.service.ShizukuBoost.State.TooOld -> "版本过低"
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (shizukuState == dev.aigw.app.service.ShizukuBoost.State.Ready) {
+                        MaterialTheme.colorScheme.tertiary
+                    } else {
+                        MaterialTheme.colorScheme.error
+                    },
+                )
+            }
+            Text(
+                text = "说明：Shizuku 每次重启后需重新激活（无线调试授权会失效），所以它是「开机后点一次」；" +
+                    "无人值守的复活能力仍需 Root 守护。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                when (shizukuState) {
+                    dev.aigw.app.service.ShizukuBoost.State.Ready -> {
+                        ChoiceChip("一键增强", selected = false) { viewModel.shizukuBoost() }
+                        ChoiceChip("自检", selected = false) { viewModel.shizukuInspect() }
+                        ChoiceChip("撤销", selected = false) { viewModel.shizukuRevert() }
+                    }
+                    dev.aigw.app.service.ShizukuBoost.State.NeedPermission ->
+                        ChoiceChip("请求授权", selected = false) { viewModel.shizukuRequestPermission() }
+                    dev.aigw.app.service.ShizukuBoost.State.NotRunning ->
+                        Text(
+                            text = "请先在 Shizuku App 里开启无线调试并启动服务，然后回到本页。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    is dev.aigw.app.service.ShizukuBoost.State.TooOld ->
+                        Text(
+                            text = "Shizuku 版本过低（v${shizukuState.version}），需要 11 以上。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                }
+            }
+        }
+
+        SectionCard(enterIndex = 6) {
             StatusRow(
                 title = "通知权限",
                 detail = if (status?.notificationsGranted == true) "已允许，常驻通知可见" else "未允许，后台通知不会显示",
@@ -240,7 +321,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard(enterIndex = 6) {
+        SectionCard(enterIndex = 7) {
             Text("厂商后台管理页", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "国产系统默认会限制第三方应用后台。下面的入口会尝试直接打开厂商的后台管理页；" +

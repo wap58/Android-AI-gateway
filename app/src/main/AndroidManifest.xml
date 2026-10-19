@@ -42,6 +42,33 @@
                 android:value="本地网关需在后台持续监听端口，锁屏后客户端仍能调用" />
         </service>
 
+        <!--
+          Shizuku UserService：由 Shizuku 用 app_process + sourceDir 直接拉起，
+          uid 是 shell(2000)，让本应用能以 adb 身份执行 am/cmd 命令
+          （改 Doze 白名单、standby 分级、解除休眠冻结等）。
+
+          注意：不要加 android:permission="rikka.shizuku.BIND" —— 这个权限并不存在，
+          UserService 的绑定不走 bindService，权限校验由 Shizuku 侧按「调用方 uid 与包名一致」
+          完成（见 UserServiceManager.ensureCallingPackageForUserService）。
+          加了不存在的权限只会让这条路径永远失败。
+        -->
+        <service
+            android:name=".service.ShellProxyService"
+            android:exported="false" />
+
+        <!--
+          Shizuku 的 ContentProvider：Shizuku App 通过它把服务 binder 递给本应用。
+          provider 模块不会自动合并 Manifest，必须自己声明，authorities 必须是
+          ${applicationId}.shizuku（写成 applicationId 而非硬编码包名，debug 包也能用）。
+        -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
         <service
             android:name=".service.GatewayTileService"
             android:exported="true"
