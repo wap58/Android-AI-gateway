@@ -111,6 +111,31 @@ object ShizukuBoost {
     /** 当前是 Sui 还是 Shizuku，用于界面提示。 */
     fun isSui(): Boolean = suiMode && rikka.sui.Sui.isSui()
 
+    /**
+     * 监听 binder 到达/断开，让界面**事件驱动**地更新，而不是靠用户手动返回再进。
+     *
+     * 为什么必须有这个：binder 是异步递过来的（ShizukuProvider 的回调、
+     * Sui.init 的返回都有延迟）。只靠 ON_RESUME 查询一次，首次进入本页时
+     * binder 往往还没就绪，界面就一直停在「未授权」，用户必须退出去再进来才刷新 ——
+     * 这正是上一版被吐槽的现象。
+     *
+     * @param onChanged 状态可能变化时回调（收到 binder / binder 断开）
+     * @return 取消注册的句柄
+     */
+    fun observe(onChanged: () -> Unit): () -> Unit {
+        val received = Shizuku.OnBinderReceivedListener { onChanged() }
+        val dead = Shizuku.OnBinderDeadListener { onChanged() }
+        runCatching {
+            // Sticky：若 binder 已就绪会立即回调，不会漏掉进程启动早期那次
+            Shizuku.addBinderReceivedListenerSticky(received)
+            Shizuku.addBinderDeadListener(dead)
+        }.onFailure { Log.w(TAG, "注册 binder 监听失败", it) }
+        return {
+            runCatching { Shizuku.removeBinderReceivedListener(received) }
+            runCatching { Shizuku.removeBinderDeadListener(dead) }
+        }
+    }
+
     fun currentState(): State = when {
         !Shizuku.pingBinder() -> State.NotRunning
         // Sui 的版本号语义与 Shizuku 不同：Sui 不提供 isPreV11 的可信结果，

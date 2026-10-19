@@ -67,11 +67,21 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
     // 冷进入本页不会收到事件，不补这一句状态会一直显示「正在查询」。
     LaunchedEffect(Unit) { viewModel.refreshRootKeeperState() }
 
-    // Shizuku 状态必须响应式：用户在 Shizuku App 里授权/断开会立刻反映到本页。
-    // 直接调用 currentState() 拿到的是瞬时值，不会触发重绘。
+    // Shizuku / Sui 状态要事件驱动：binder 是异步递过来的，
+    // 只靠 ON_RESUME 查一次的话，首次进本页时 binder 常常还没就绪，
+    // 界面会一直停在「未授权」，用户必须退出去再进来才刷新。
     var shizukuState by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.currentState()) }
-    // Sui / Shizuku 的判定同样要响应式：binder 在进程启动后才就绪
     var suiMode by remember { mutableStateOf(dev.aigw.app.service.ShizukuBoost.isSui()) }
+
+    DisposableEffect(Unit) {
+        // binder 到达 / 断开时立刻重算，不用等用户手动切页面
+        val stop = dev.aigw.app.service.ShizukuBoost.observe {
+            shizukuState = dev.aigw.app.service.ShizukuBoost.currentState()
+            suiMode = dev.aigw.app.service.ShizukuBoost.isSui()
+        }
+        onDispose { stop() }
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
