@@ -1,0 +1,17 @@
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.kotlin/
+captures/
+*.apk
+*.keystore
+*.jks
+keystore.properties
+
+# 只用于本地构建/诊断，不进仓库
+scripts/
+
+# UI 方案稿（本地设计草稿）
+ui-proposals/

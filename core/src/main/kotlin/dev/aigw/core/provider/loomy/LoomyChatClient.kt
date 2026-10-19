@@ -1,0 +1,39 @@
+package dev.aigw.core.provider.loomy
+
+/**
+ * 对话客户端。
+ *
+ * 上游 `/api/v1/chat/completions` **本身就是 OpenAI 兼容协议**（官方客户端的
+ * `@ai-sdk/openai-compatible` provider 直连它），所以网关这一层只做：
+ * 换账号 → 补认证/追踪头 → 转发 → 原样回传 SSE。
+ *
+ * 认证走裸 `token` 头（session），同时按官方客户端再带一个 `Authorization: Bearer`。
+ */
+class LoomyChatClient(
+    private val apiBase: String = LoomyConstants.API_BASE,
+    private val clientVersion: String = LoomyConstants.CLIENT_VERSION,
+) {
+
+    /** 发起一次流式对话，返回尚未读取的连接。 */
+    fun openStream(account: LoomyAccount, body: String): LoomyStreamCall {
+        val headers = mapOf(
+            "Accept" to "application/json",
+            "Content-Type" to "application/json",
+            "Authorization" to "Bearer ${account.session}",
+            LoomyConstants.TOKEN_HEADER to account.session,
+            LoomyConstants.TRACEPARENT_HEADER to LoomyTrace.newTraceparent(),
+            LoomyConstants.VERSION_HEADER to clientVersion,
+            // 官方客户端会带这三个头（用客户端自带的调试反代导出真实请求得到）：
+            // `invokeorigin` 区分用户主动/后台子调用，`chatid`/`msgid` 用于服务端会话归因。
+            LoomyConstants.INVOKE_ORIGIN_HEADER to "user",
+            // `chatid`/`msgid` 是**可选的计费归因头**（官方逆向文档：Optional attribution headers,
+            // used for points bookkeeping server-side），不是前缀缓存的分桶键。
+            // 2.11.0 曾把 chatid 改成「同会话稳定」，随后出现偶发 HTTP 409：
+            // 稳定的 chatid + 每请求换新的 msgid 会被上游当成同一个对话里的并发/重放，
+            // 而官方客户端每个请求的 chatid 都是新的。这里恢复「每请求唯一」。
+            LoomyConstants.CHAT_ID_HEADER to "chat-${LoomyTrace.newUuid()}",
+            LoomyConstants.MESSAGE_ID_HEADER to "msg-${LoomyTrace.newUuid()}",
+        )
+        return openStreamCall("$apiBase${LoomyConstants.PATH_CHAT_COMPLETIONS}", headers, body)
+    }
+}
