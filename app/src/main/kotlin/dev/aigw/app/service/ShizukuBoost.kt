@@ -198,12 +198,16 @@ object ShizukuBoost {
             // 顺序有讲究：set-standby-bucket 会把限制等级联动改成 exempted，
             // 所以「设为 unrestricted」必须排在它之后，否则会被覆盖回去。
             // 设完立即回读确认，避免「命令返回成功但实际没变」的假象。
+            results += probe(proxy, "休眠豁免", "am set-inactive --user 0 $pkg false")
+            // 后台限制等级必须**放最后**：
+            // set-inactive 与 set-standby-bucket 都会把它重置回 adaptive_bucket，
+            // 先设会被覆盖（实测：设成 unrestricted 后再 set-inactive → 变回 adaptive_bucket）。
+            // 设完立即回读确认，避免「命令没报错但值没变」的假成功。
             results += probeAndConfirm(
                 proxy, "后台限制等级",
                 "am set-bg-restriction-level --user 0 $pkg unrestricted",
                 "am get-bg-restriction-level --user 0 $pkg",
             ) { value -> value == "unrestricted" || value == "exempted" }
-            results += probe(proxy, "休眠豁免", "am set-inactive --user 0 $pkg false")
             results += probe(proxy, "省流量白名单", "cmd netpolicy add restrict-background-whitelist $uid")
         }
         if (results.isEmpty()) {
