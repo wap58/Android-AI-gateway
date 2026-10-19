@@ -71,10 +71,10 @@ private const val SMS_RESEND_INTERVAL_MS = 60_000L
 private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 
 /** 项目仓库地址（GitHub）。 */
-private const val PROJECT_URL = "https://github.com/xibai6668/Android-AI-gateway"
+private const val PROJECT_URL = "https://github.com/wap58/Android-AI-gateway"
 
 /** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
-private const val RELEASES_API = "https://api.github.com/repos/xibai6668/Android-AI-gateway/releases/latest"
+private const val RELEASES_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases/latest"
 
 /** GitHub API 要求请求带 User-Agent。 */
 private const val UPDATE_UA = "ai-gateway-android"
@@ -759,7 +759,9 @@ class AppViewModel(
     fun setHideRecents(enabled: Boolean) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setHideRecentsEnabled(engine.store(), enabled) }
-            notice(if (enabled) "已开启，下次退到后台会从最近任务中隐藏" else "隐藏多任务已关闭")
+            // 立即同步标记，无需等下次退后台（只改标记，不销毁任务）
+            runCatching { dev.aigw.app.service.HideRecents.syncNow(app, enabled) }
+            notice(if (enabled) "已开启，本应用不再出现在最近任务列表" else "隐藏多任务已关闭")
             refresh()
         }
     }

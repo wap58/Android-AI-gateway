@@ -178,7 +178,7 @@ private fun ConsoleCard(
 ) {
     val gold = LocalAppColors.current.goldStart
     SectionCard(modifier = Modifier.staggeredAppear(0)) {
-        SectionHeader("网关状态 · CORE CONSOLE")
+        SectionHeader("网关状态")
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -186,19 +186,18 @@ private fun ConsoleCard(
             StatusDot(state.running)
             Spacer(Modifier.width(10.dp))
             Text(
-                text = if (state.running) "SERVICE ACTIVE" else "SERVICE STOPPED",
+                text = if (state.running) "服务运行中" else "服务已停止",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Light,
-                letterSpacing = 0.5.sp,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
+                modifier = Modifier.weight(1f),
             )
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.width(12.dp))
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = "LISTEN PORT",
+                    text = "监听端口",
                     style = MaterialTheme.typography.labelSmall,
-                    letterSpacing = 0.8.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
