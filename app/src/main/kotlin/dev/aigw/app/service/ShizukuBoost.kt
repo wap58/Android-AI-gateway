@@ -15,6 +15,14 @@ import java.util.concurrent.TimeUnit
 import rikka.shizuku.Shizuku
 
 /**
+ * su 命令的等待上限（秒）。
+ *
+ * 没有超时的 `waitFor()` 会在异常情况下永久阻塞调用线程（表现为界面卡死）。
+ * 放在文件顶层：`ShizukuBoost` 与 `RootShell` 都要用。
+ */
+private const val SU_TIMEOUT_SEC = 20L
+
+/**
  * Shizuku 增强：让无 Root 的手机把系统压制等级调低。
  *
  * ## 身份与通道
@@ -54,13 +62,6 @@ object ShizukuBoost {
     /** UserService 的 tag，用于在多个进程里区分不同用途的代理。 */
     private const val PROXY_TAG = "tyd_shell_proxy"
 
-    /**
-     * su 命令的等待上限（秒）。
-     *
-     * Sukisu / KernelSU 在新包首次请求 root 时会弹授权框，若用户不处理，
-     * 没有超时的 waitFor 会永久阻塞调用线程（表现为界面卡死、点了没反应）。
-     */
-    private const val SU_TIMEOUT_SEC = 20L
 
     // ---------------------------------------------------------------- 状态
 
