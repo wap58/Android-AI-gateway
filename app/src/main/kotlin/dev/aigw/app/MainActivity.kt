@@ -261,7 +261,12 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     state.updateInfo?.let { info ->
         AlertDialog(
             onDismissRequest = { viewModel.dismissUpdate() },
-            title = { Text("发现新版本 ${info.version}") },
+            title = {
+                // 远端版本形如 0.0.9.27（末段是 versionCode），标题只展示主版本三段
+                val parts = info.version.split('.')
+                val shown = if (parts.size > 3) parts.dropLast(1).joinToString(".") else info.version
+                Text("发现新版本 $shown")
+            },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(

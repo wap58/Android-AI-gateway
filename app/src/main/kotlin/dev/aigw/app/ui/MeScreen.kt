@@ -292,12 +292,27 @@ private fun appearanceMeta(state: AppUiState): String {
     return mode + " · " + (if (customGold) formatHex(state.goldStart) else "默认金")
 }
 
+/**
+ * 界面显示的版本号。
+ *
+ * versionName 里刻意带上了 versionCode 末段（如 `0.0.9.27`）——
+ * 因为更新检测只比 versionName，主版本不变时靠末段区分新旧。
+ * 但界面上四段看着冗余，这里只展示主版本三段，build 号单独放在括号里。
+ * 安装器里看到的仍是完整的四段（系统读的就是 versionName）。
+ */
 private fun appVersion(context: android.content.Context): String = runCatching {
     val pkg = context.packageManager.getPackageInfo(context.packageName, 0)
     val name = pkg.versionName.orEmpty()
     @Suppress("DEPRECATION")
     val code = pkg.versionCode
-    "${name.ifEmpty { "—" }}（build $code）"
+    // 去掉末尾与 versionCode 相同的段（0.0.9.27 → 0.0.9）
+    val parts = name.split('.')
+    val display = if (parts.size > 3 && parts.last().toIntOrNull() == code) {
+        parts.dropLast(1).joinToString(".")
+    } else {
+        name
+    }
+    "${display.ifEmpty { "—" }}（build $code）"
 }.getOrDefault("—")
 
 /** 点「我的」标题弹出的作者信息：两行居中，点任意处关闭。 */
