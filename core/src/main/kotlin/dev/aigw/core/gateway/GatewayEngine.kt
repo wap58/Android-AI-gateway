@@ -1414,7 +1414,7 @@ class GatewayEngine(
         // 无前缀或前缀未识别：按模型名特征推导
         val inferred = inferProviderByModel(model)
         if (inferred != null && registry.get(inferred) != null) {
-            if (providerSettings(inferred).enabled && pool.size(inferred) > 0) {
+            if (isDispatchable(inferred)) {
                 return Route(inferred, model)
             }
         }
@@ -1422,7 +1422,7 @@ class GatewayEngine(
         // 检查当前所有已启用且配置了可用账号的供应商
         val activeProviders = registry.all()
             .map { it.id }
-            .filter { providerSettings(it).enabled && pool.size(it) > 0 }
+            .filter { isDispatchable(it) }
 
         // 如果用户只配置了一个供应商的账号，所有请求由该供应商接管
         if (activeProviders.size == 1) {
@@ -1436,12 +1436,24 @@ class GatewayEngine(
 
         // 最终兜底：优先选第一个有账号的供应商，再看 defaultProvider
         val fallback = activeProviders.firstOrNull()
-            ?: settings.defaultProvider.takeIf { registry.get(it) != null && pool.size(it) > 0 }
+            ?: settings.defaultProvider.takeIf { registry.get(it) != null && isDispatchable(it) }
             ?: settings.defaultProvider.takeIf { registry.get(it) != null }
             ?: registry.all().firstOrNull()?.id
             ?: return null
 
         return Route(fallback, model)
+    }
+
+    /**
+     * 该供应商是否「可调度」：已启用，且要么池里有账号，要么它本身免账号。
+     *
+     * 免账号供应商（OpenCode 免费通道）池里永远是空的，
+     * 直接用 `pool.size() > 0` 判断会把它误判成「没有账号」而永远选不中。
+     */
+    private fun isDispatchable(providerId: String): Boolean {
+        if (!providerSettings(providerId).enabled) return false
+        if (registry.get(providerId) is dev.aigw.core.provider.NoAccountSupport) return true
+        return pool.size(providerId) > 0
     }
 
     /**
@@ -1469,6 +1481,13 @@ class GatewayEngine(
      * 在指定供应商中选号；[region] 非空时只选属于该区域且处于可用状态的账号中余额最高者。
      */
     fun pickAccount(providerId: String, exclude: Set<String> = emptySet(), region: String? = null): ProviderAccount? {
+        // 免账号供应商（OpenCode 免费通道）：池里没有账号也能调度，现场合成一个。
+        // 放在最前面：它优先级最高，不受 pool 是否为空影响。
+        val noAccount = registry.get(providerId) as? dev.aigw.core.provider.NoAccountSupport
+        if (noAccount != null) {
+            val synthetic = noAccount.syntheticAccount()
+            return if (synthetic.uid in exclude) null else synthetic
+        }
         if (region == null) return pool.pick(providerId, exclude)
         val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport ?: return pool.pick(providerId, exclude)
         // 一次取状态快照（单次加锁），避免对每个账号各加一次读锁
@@ -1641,7 +1660,7 @@ class GatewayEngine(
             lower.startsWith("spark") || lower.contains("星火") -> "loomy"
             lower.startsWith("deepseek") || lower.startsWith("kimi") || lower.startsWith("minimax") || lower.startsWith("glm") || lower.startsWith("qwen") -> {
                 // 只认已启用且有账号的供应商，避免推导到一个被用户关掉的供应商
-                listOf("codebuddy", "trae").firstOrNull { providerSettings(it).enabled && pool.size(it) > 0 }
+                listOf("codebuddy", "trae").firstOrNull { isDispatchable(it) }
             }
             else -> null
         }

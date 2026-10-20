@@ -4,6 +4,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
+import dev.aigw.core.provider.NoAccountSupport
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.FailedChatCall
 import dev.aigw.core.provider.Provider
@@ -33,7 +34,7 @@ import dev.aigw.core.util.HttpSupport
  */
 class OpenCodeProvider(
     private val nowMillis: () -> Long = System::currentTimeMillis,
-) : Provider {
+) : Provider, NoAccountSupport {
 
     override val id: String = ID
     override val displayName: String = "OpenCode 免费"
@@ -41,6 +42,19 @@ class OpenCodeProvider(
 
     /** 网关侧给它的上游域名（代理开关按后缀匹配）。 */
     override fun hosts(): List<String> = listOf("opencode.ai")
+
+    /**
+     * 合成账号：不落账号池，由 GatewayEngine.pickAccount 现场提供。
+     *
+     * 用固定 uid，这样并发闸门、熔断、指标统计都能稳定按这个 key 聚合，
+     * 不会每次请求都变成新账号。
+     */
+    override fun syntheticAccount(): ProviderAccount = ProviderAccount(
+        providerId = ID,
+        uid = PLACEHOLDER_UID,
+        nickname = "公共免费通道",
+        secret = "{}",
+    )
 
     private val catalog = OpenCodeModelCatalog(nowMillis = nowMillis)
 
