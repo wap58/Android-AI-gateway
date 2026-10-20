@@ -211,9 +211,11 @@ class RequestSanitizer(
      */
     private inline fun replaceAllSafe(matcher: java.util.regex.Matcher, transform: (String) -> String): String {
         val sb = StringBuilder()
-        while (matcher.find()) {
+        // 注意：调用方已经 find() 过一次，这里必须先把「当前这次匹配」处理掉，
+        // 否则直接 while(find()) 会跳过第一个匹配（表现为首个敏感词未被改写）。
+        do {
             matcher.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(transform(matcher.group())))
-        }
+        } while (matcher.find())
         matcher.appendTail(sb)
         return sb.toString()
     }

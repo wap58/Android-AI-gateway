@@ -37,7 +37,7 @@ android {
         // 版本策略（用户指定）：版本名冻结在 0.0.6 作为正式 release 基线，
         // 之后只递增 versionCode 走 CI 测试包，攒够一波改动再统一发新 release。
         // 0.0.7：修复守护拉起失效、Sui 增强命令覆盖、状态不刷新等一批问题后发布
-        versionCode = 19
+        versionCode = 20
         versionName = "0.0.7"
     }
 
