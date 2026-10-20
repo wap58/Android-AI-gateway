@@ -185,38 +185,41 @@ class RequestSanitizer(
             val matcher = pattern.matcher(current)
             if (matcher.find()) {
                 matched.add(word)
-                current = replaceAllSafe(matcher) { obfuscateWord(it) }
+                current = replaceAllSafe(current, matcher) { obfuscateWord(it) }
             }
         }
         return current to matched
     }
 
     /**
-     * 用 [Matcher.appendReplacement] 完成「按函数替换」。
+     * 遍历所有匹配并逐个替换。
      *
-     * ## 为什么不用 matcher.replaceAll { }
+     * ## 为什么不使用 Matcher 的替换 API（两次踩坑记录）
      *
-     * Kotlin 里 `matcher.replaceAll { ... }` 的尾随 lambda 会被编译成
-     * `Matcher.replaceAll(Function)` —— 这是 **Java 9 才引入**、Android 上
-     * **API 34（Android 14）才有** 的重载。在 Android 13 及以下调用会抛：
+     * 1. `matcher.replaceAll { }` → 编译成 `replaceAll(Function)`，
+     *    Java 9 引入、Android 14(API 34) 才有 → Android 13 报 NoSuchMethodError。
+     * 2. 改用 `appendReplacement(StringBuilder, String)` 后**同样炸**：
+     *    这个接收 StringBuilder 的重载也是 Java 9 才加的，
+     *    低版本只有 `appendReplacement(StringBuffer, String)`。
      *
-     * ```
-     * NoSuchMethodError: No virtual method
-     *   replaceAll(Ljava/util/function/Function;)Ljava/lang/String;
-     *   in class Ljava/util/regex/Matcher;
-     * ```
-     *
-     * 而 appendReplacement/appendTail 从 Java 1.4 就有，全平台可用。
-     * 这个坑很隐蔽：编译期完全正常，只有低版本设备运行时才炸。
+     * 所以这里彻底不用替换 API，只用 [Matcher.find] / [Matcher.start] /
+     * [Matcher.end] / [Matcher.group] —— 这几个从 Java 1.4 起就存在，全版本可用。
      */
-    private inline fun replaceAllSafe(matcher: java.util.regex.Matcher, transform: (String) -> String): String {
+    private inline fun replaceAllSafe(
+        text: String,
+        matcher: java.util.regex.Matcher,
+        transform: (String) -> String,
+    ): String {
         val sb = StringBuilder()
-        // 注意：调用方已经 find() 过一次，这里必须先把「当前这次匹配」处理掉，
-        // 否则直接 while(find()) 会跳过第一个匹配（表现为首个敏感词未被改写）。
-        do {
-            matcher.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(transform(matcher.group())))
-        } while (matcher.find())
-        matcher.appendTail(sb)
+        var last = 0
+        while (matcher.find()) {
+            // 只用 String.substring + StringBuilder.append(String)：
+            // 这两个是最基础的 API，不存在「某个重载低版本没有」的问题。
+            sb.append(text.substring(last, matcher.start()))
+            sb.append(transform(matcher.group()))
+            last = matcher.end()
+        }
+        sb.append(text.substring(last))
         return sb.toString()
     }
 
