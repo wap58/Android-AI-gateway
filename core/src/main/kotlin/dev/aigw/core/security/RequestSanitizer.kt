@@ -185,7 +185,7 @@ class RequestSanitizer(
             val matcher = pattern.matcher(current)
             if (matcher.find()) {
                 matched.add(word)
-                current = replaceAllSafe(current, matcher) { obfuscateWord(it) }
+                current = replaceAllSafe(current, pattern) { obfuscateWord(it) }
             }
         }
         return current to matched
@@ -207,11 +207,14 @@ class RequestSanitizer(
      */
     private inline fun replaceAllSafe(
         text: String,
-        matcher: java.util.regex.Matcher,
+        pattern: java.util.regex.Pattern,
         transform: (String) -> String,
     ): String {
         val sb = StringBuilder()
         var last = 0
+        // 必须用新 matcher 从头 find：调用方已经 find() 过一次，
+        // 复用同一个 matcher 会跳过第一个匹配（表现为首个敏感词没被改写）。
+        val matcher = pattern.matcher(text)
         while (matcher.find()) {
             // 只用 String.substring + StringBuilder.append(String)：
             // 这两个是最基础的 API，不存在「某个重载低版本没有」的问题。
