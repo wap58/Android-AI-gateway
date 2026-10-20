@@ -508,7 +508,8 @@ fun EditorialGroupHeader(index: String, title: String, meta: String? = null) {
     ) {
         Box(Modifier.size(width = 4.dp, height = 15.dp).background(gold))
         Text(
-            text = "$index / $title",
+            // index 为空时不显示序号前缀，只留标题
+            text = if (index.isBlank()) title else "$index / $title",
             style = MaterialTheme.typography.labelMedium,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 1.2.sp,
