@@ -14,8 +14,14 @@ import java.net.URL
  */
 object HttpSupport {
 
-    /** 响应体读取上限，防止上游异常时撑爆内存。 */
-    const val MAX_BODY_BYTES = 1 shl 20
+    /**
+     * 响应体读取上限，防止上游异常时撑爆内存。
+     *
+     * 1MB 对模型目录偏紧：带内嵌图标、或供应商多时清单能到几百 KB，
+     * 再叠加压缩前的原始长度就容易被截断（表现为模型列表莫名变少）。
+     * 4MB 仍远小于内存风险阈值。
+     */
+    const val MAX_BODY_BYTES = 4 shl 20
 
     /**
      * 建立连接并按需写入 body。

@@ -196,7 +196,18 @@ class GatewayHttpServer(
         val preprocessStart = System.currentTimeMillis()
         val (body, readResult) = readBody(session)
         if (readResult == BodyReadResult.OVER_LIMIT) {
-            return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
+            // 把客户端声明的实际大小带出来：只报「超过上限」用户无法判断是限制太小还是请求异常
+            val declaredBytes = session.headers["content-length"]?.trim()?.toLongOrNull() ?: 0L
+            val actual = if (declaredBytes > 0) {
+                String.format(java.util.Locale.US, "%.1f MB", declaredBytes / 1024.0 / 1024.0)
+            } else {
+                "未知（分块传输）"
+            }
+            log("请求体超限被拒：声明大小 $actual，上限 ${MAX_BODY_BYTES / (1024 * 1024)}MB")
+            return errorResponse(
+                413, "payload_too_large",
+                "请求体 ${actual}，超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限",
+            )
         }
         if (body.isEmpty()) {
             logInvalidBody(session, body, "请求体为空")
@@ -1157,7 +1168,15 @@ class GatewayHttpServer(
     private fun log(text: String) = engine.log(text)
 
     companion object {
-        const val MAX_BODY_BYTES = 8 * 1024 * 1024
+        /**
+         * 请求体上限。
+         *
+         * 原来 8MB 对大上下文客户端偏小：带图片 base64 或多轮长对话时
+         * 单次请求很容易超过，客户端只会看到 413，很难判断是「真的太大」还是「限制太小」。
+         * 32MB 覆盖实际使用场景，同时仍在低端机内存可承受范围内
+         * （解析时峰值约为 body 的 2~3 倍）。
+         */
+        const val MAX_BODY_BYTES = 32 * 1024 * 1024
 
         /** `/v1/credits` 并行拉取的单家预算；上游半挂时不能让请求线程无限等。 */
         private const val CREDITS_FETCH_TIMEOUT_SECONDS = 20L
