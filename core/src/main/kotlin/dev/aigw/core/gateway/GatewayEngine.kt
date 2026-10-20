@@ -184,6 +184,14 @@ class GatewayEngine(
     spillDir: java.io.File? = null,
     /** 调用记录落盘改走后台队列（App 传 true；CLI/测试保持同步）。 */
     asyncCallLogWrites: Boolean = false,
+    /**
+     * 是否注册内置供应商。
+     *
+     * 单元测试传 false：它们是针对「自己注册的那几家」写的，
+     * 内置供应商（尤其免账号、永远可调度的 OpenCode）会改变候选集合，
+     * 让「只配一家时由它接管」这类用例失去意义。
+     */
+    registerBuiltins: Boolean = true,
 ) {
     val settingsRepository = SettingsRepository(store)
     val pool = AccountPool(store, nowMillis)
@@ -321,7 +329,7 @@ class GatewayEngine(
     }
 
     init {
-        registerBuiltinProviders(this)
+        if (registerBuiltins) registerBuiltinProviders(this)
         reloadCustomProviders()
         installProxy()
         sanitizer.reloadPipeline(securitySettings.extraWords)

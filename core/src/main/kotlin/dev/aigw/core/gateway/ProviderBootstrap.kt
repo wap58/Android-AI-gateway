@@ -64,23 +64,10 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
 
     // OpenCode 免费通道：凭据是公开哨兵 Bearer public，不需要真实账号。
     //
+    // 作为默认集成的供应商之一，默认启用。
     // 刻意**不**在池里预建账号：账号池的 size 被「用户是否配置过供应商」的判断依赖
-    // （见 resolveRoute 的 activeProviders.size == 1 分支），塞一个占位账号会让
-    // 用户明明只配了 A 供应商、却因为这里多出一个而被判成「配了两家」，
-    // 无前缀请求就不再由 A 接管。账号由 pickAccount 对 [NoAccountSupport] 合成。
-    //
-    // 默认**关闭**：它免账号、永远「可调度」，若默认启用会参与无前缀请求的路由，
-    // 把用户本意交给 Trae/WorkBuddy 的请求分走。用户在供应商页手动打开后才参与调度。
-    // 只在该供应商从未被配置过时写入默认值，不覆盖用户后来的选择。
-    val openCode = OpenCodeProvider(nowMillis = { engine.now() })
-    registry.register(openCode)
-    // 用一个独立标记键记录「已写过默认值」：只写一次，之后完全尊重用户的开关选择。
-    val seededKey = "provider/opencode/defaultSeeded"
-    if (engine.store().read(seededKey) != "1") {
-        engine.store().write(seededKey, "1")
-        engine.updateProviderSettings(
-            OpenCodeProvider.ID,
-            dev.aigw.core.gateway.ProviderSettings(enabled = false),
-        )
-    }
+    // （见 resolveRoute 的 activeProviders.size == 1 分支），塞占位账号会让
+    // 用户明明只配了 A、却因为这里多出一个而被判成「配了两家」。
+    // 账号由 pickAccount 对 [NoAccountSupport] 现场合成。
+    registry.register(OpenCodeProvider(nowMillis = { engine.now() }))
 }

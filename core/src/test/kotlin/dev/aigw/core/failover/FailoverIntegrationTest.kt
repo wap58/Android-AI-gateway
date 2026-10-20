@@ -60,7 +60,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `显式配置多候选优先级且成功透明归一化输出`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         var p1Calls = 0
         var p2Calls = 0
 
@@ -111,7 +111,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `401 凭证失效错误立即切换下一个供应商且不浪费重试次数`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         var p1Calls = 0
         var p2Calls = 0
 
@@ -159,7 +159,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `客户端 400 参数或审核错误立即向客户端报错绝不换供应商`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         var p1Calls = 0
         var p2Calls = 0
 
@@ -204,7 +204,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `客户端错误不计入供应商熔断，健康供应商不被误隔离`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         var p1Calls = 0
         var p2Calls = 0
 
@@ -257,7 +257,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `上游侧错误仍计入熔断`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         val p1 = ConfigurableProvider("p1", listOf("m")) { _, _ -> FailedChatCall(500, "p1 down") }
         val p2 = ConfigurableProvider("p2", listOf("m")) { _, _ -> AggregatedChatCall(200, "{}") }
 
@@ -296,7 +296,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `上游失败时调用记录带真实 HTTP 状态而非硬编码 200`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         val p1 = ConfigurableProvider("p1", listOf("m")) { _, _ -> FailedChatCall(500, "p1 down") }
         val p2 = ConfigurableProvider("p2", listOf("m")) { _, _ -> FailedChatCall(502, "p2 bad gateway") }
 
@@ -333,7 +333,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `熔断开启的供应商直接被跳过`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         var p1Calls = 0
         var p2Calls = 0
 
@@ -383,7 +383,7 @@ class FailoverIntegrationTest {
 
     @Test
     fun `所有候选供应商均耗尽时聚合报错返回 503`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         val p1 = ConfigurableProvider("p1", listOf("m")) { _, _ -> FailedChatCall(500, "p1 down") }
         val p2 = ConfigurableProvider("p2", listOf("m")) { _, _ -> FailedChatCall(504, "p2 timeout") }
 

@@ -64,7 +64,7 @@ class SmartRoutingTest {
 
     @Test
     fun `带别名前缀能正确路由且不区分大小写`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         engine.registry.register(DummyProvider("antigravity"))
 
         assertEquals("antigravity", engine.resolveRoute("google/gemini-2.5-flash")?.providerId)
@@ -77,7 +77,7 @@ class SmartRoutingTest {
 
     @Test
     fun `WorkBuddy 区域前缀能正确识别区域约束并在模型列表拆为两组`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         // 内置 CodeBuddyProvider 已实现 RegionAwareSupport；这里用替身覆盖同名 id，
         // 因为模型目录只在登录后拉取，无内置快照后单测里拿不到真实目录。
         engine.registry.register(RegionStubProvider("codebuddy", listOf("cn", "global")))
@@ -112,7 +112,7 @@ class SmartRoutingTest {
 
     @Test
     fun `无前缀时根据模型特征智能路由到 antigravity`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         engine.registry.register(DummyProvider("trae"))
         engine.registry.register(DummyProvider("antigravity"))
         // 反重力有账号，trae 没有
@@ -130,7 +130,7 @@ class SmartRoutingTest {
 
     @Test
     fun `用户仅配置反重力一个供应商时所有无前缀请求由反重力接管`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         engine.registry.register(DummyProvider("trae"))
         engine.registry.register(DummyProvider("antigravity"))
         engine.registry.register(DummyProvider("codebuddy"))
@@ -145,7 +145,7 @@ class SmartRoutingTest {
 
     @Test
     fun `关闭故障转移后不再产生跨供应商候选`() {
-        val engine = GatewayEngine(InMemoryKeyValueStore())
+        val engine = GatewayEngine(InMemoryKeyValueStore(), registerBuiltins = false)
         // 两家都提供同名模型且都有账号 —— 满足启发式回退产生候选的条件
         engine.registry.register(CatalogProvider("trae", listOf("gemini-2.5-flash")))
         engine.registry.register(CatalogProvider("antigravity", listOf("gemini-2.5-flash")))
