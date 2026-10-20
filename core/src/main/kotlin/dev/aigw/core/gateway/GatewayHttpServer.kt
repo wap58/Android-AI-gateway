@@ -191,6 +191,9 @@ class GatewayHttpServer(
     private fun chatCompletions(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (!authorized(session)) return unauthorized(session)
 
+        // 本地预处理计时的起点：到真正发起上游请求（provider.openChat）为止，
+        // 这一段全是网关自己算的，与网络无关。
+        val preprocessStart = System.currentTimeMillis()
         val (body, readResult) = readBody(session)
         if (readResult == BodyReadResult.OVER_LIMIT) {
             return errorResponse(413, "payload_too_large", "请求体超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限")
@@ -287,6 +290,8 @@ class GatewayHttpServer(
             val secSettings = engine.securitySettings()
             // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
             val sanitized = engine.sanitizer.sanitizeOpenAiBody(prepared, resolvedModel, secSettings.sanitizeEnabled)
+            // 到这里的耗时全是本地算的（读 body / JSON 解析 / 改 model / 脱敏）
+            val preprocessMs = System.currentTimeMillis() - preprocessStart
 
             val tried = HashSet<String>()
             var attempt = 0
@@ -530,7 +535,7 @@ class GatewayHttpServer(
                     val sse = OpenAiSseAggregator.completionAsSse(aggregated).byteInputStream(Charsets.UTF_8)
                     // 非流式包 SSE：上游响应已读入内存，许可在这里释放即可
                     gateHandle.release()
-                    return streamResponse(sse, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status)
+                    return streamResponse(sse, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, preprocessMs = preprocessMs)
                 }
 
                 if (streaming) {
@@ -547,7 +552,7 @@ class GatewayHttpServer(
                     // 流式透传：在途许可要覆盖整个读流转发阶段，所有权交给 onClosed（流结束后释放），
                     // 先清空 pendingGate 以免循环级 finally 在 return 时提前释放。
                     pendingGate = null
-                    return streamResponse(stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, onFinished = { gateHandle.release() })
+                    return streamResponse(stream, call, currentRoute.providerId, transparentModel, account.uid, account.nickname, startedAt, body, call.status, preprocessMs = preprocessMs, onFinished = { gateHandle.release() })
                 }
 
                 if (aggregated != null) {
@@ -619,9 +624,12 @@ class GatewayHttpServer(
         startedAt: Long,
         requestBody: String,
         httpStatus: Int,
+        preprocessMs: Long = 0L,
         onFinished: () -> Unit = {},
     ): NanoHTTPD.Response {
         val id = newCompletionId()
+        // 上游计时起点：从这里到流全部结束，尽量贴近「上游自己的耗时」
+        val upstreamStart = System.currentTimeMillis()
         // 转发结果快照：由 produce 在结束时写入。header 写出失败时 produce 不执行，
         // onClosed 仍要据此释放并发许可并写一条失败记录（快照为 null 即「没进转发」）。
         var snapshot: RecordedSnapshot? = null
@@ -634,12 +642,17 @@ class GatewayHttpServer(
                     recordCall(
                         id, providerId, model, uid, nickname, true,
                         CallStatus.FAILED, httpStatus, null, 0L, "连接在响应开始前中断", "", requestBody, startedAt,
+                        preprocessMillis = preprocessMs,
+                        upstreamMillis = System.currentTimeMillis() - upstreamStart,
                     )
                 } else {
                     recordCall(
                         id, providerId, model, uid, nickname, true,
                         result.status, httpStatus, result.usage, result.pointsConsumed,
                         result.failure, result.response, requestBody, startedAt, result.raw,
+                        preprocessMillis = preprocessMs,
+                        firstTokenMillis = result.firstTokenMs,
+                        upstreamMillis = System.currentTimeMillis() - upstreamStart,
                     )
                 }
             },
@@ -655,6 +668,8 @@ class GatewayHttpServer(
             var failure = ""
             var sawData = false
             var firstChunkLogged = false
+            // 首字延迟：从发起上游请求算起，到第一个内容 chunk 出站。思考型模型这项会很大。
+            var firstTokenMs = 0L
             var sawPayload = false
             // 上游是否已自己给出 [DONE]：正常结束但没给时要补一个，否则客户端只看到截断流
             var sawDone = false
@@ -688,7 +703,8 @@ class GatewayHttpServer(
                         flushBatch(batch, writer)
                         if (!firstChunkLogged && line.startsWith("data:")) {
                             firstChunkLogged = true
-                            log("首字出站（$providerId/$model）：${System.currentTimeMillis() - startedAt}ms")
+                            firstTokenMs = System.currentTimeMillis() - upstreamStart
+                            log("首字出站（$providerId/$model）：${System.currentTimeMillis() - startedAt}ms（其中上游 ${firstTokenMs}ms）")
                         }
                         val chunk = runCatching { parseChunk(line) }.getOrNull() ?: continue
                         chunk.usage?.let { usage = it }
@@ -762,7 +778,7 @@ class GatewayHttpServer(
                     engine.logVerbose("返回原文", rawLines.content())
                 }
                 // 快照交给 onClosed 统一写记录：send 的 finally 无论 produce 是否执行都会跑。
-                snapshot = RecordedSnapshot(status, usage, pointsConsumed, failure, collected.content(), rawLines.content())
+                snapshot = RecordedSnapshot(status, usage, pointsConsumed, failure, collected.content(), rawLines.content(), firstTokenMs)
             }
         }
     }
@@ -775,6 +791,7 @@ class GatewayHttpServer(
         val failure: String,
         val response: String,
         val raw: String,
+        val firstTokenMs: Long = 0L,
     )
 
     /** 把累积的 SSE 行批量写出；非空则写出并清空缓冲，返回是否有内容。 */
@@ -1099,6 +1116,9 @@ class GatewayHttpServer(
         requestBody: String,
         startedAt: Long,
         rawResponse: String = "",
+        preprocessMillis: Long = 0L,
+        firstTokenMillis: Long = 0L,
+        upstreamMillis: Long = 0L,
     ) {
         // 调用记录开关：关闭时不写任何记录（原文动辄几 KB，是存储的主要来源）；
         // 记录一 failover 链路的语义不变，只是不留痕。
@@ -1127,6 +1147,9 @@ class GatewayHttpServer(
                 requestBody = requestBody,
                 responseBody = responseText,
                 rawResponse = rawResponse,
+                preprocessMillis = preprocessMillis,
+                firstTokenMillis = firstTokenMillis,
+                upstreamMillis = upstreamMillis,
             ),
         )
     }

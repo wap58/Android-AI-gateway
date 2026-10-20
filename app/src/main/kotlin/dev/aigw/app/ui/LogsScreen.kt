@@ -300,6 +300,24 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             MetricChip("耗时", "${record.durationMillis}ms", MaterialTheme.colorScheme.onSurfaceVariant)
+            // 耗时拆解：判断「慢在网关」还是「慢在上游」的关键。三者都非 0 才展示，避免历史记录里一堆 0ms。
+            if (record.preprocessMillis > 0 || record.firstTokenMillis > 0 || record.upstreamMillis > 0) {
+                MetricChip(
+                    "本地",
+                    "${record.preprocessMillis}ms",
+                    MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                MetricChip(
+                    "首字",
+                    "${record.firstTokenMillis}ms",
+                    MaterialTheme.colorScheme.tertiary,
+                )
+                MetricChip(
+                    "上游",
+                    "${record.upstreamMillis}ms",
+                    MaterialTheme.colorScheme.secondary,
+                )
+            }
             if (record.totalTokens > 0) {
                 MetricChip("tokens", formatTokens(record.totalTokens), MaterialTheme.colorScheme.primary)
             }

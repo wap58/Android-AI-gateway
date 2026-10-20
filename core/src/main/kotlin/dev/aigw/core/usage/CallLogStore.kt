@@ -46,6 +46,19 @@ data class CallRecord(
     val responseBody: String,
     /** 返回原文（截断保存）：流式为上游逐行报文，非流式为完整 JSON；排查 503/空回复用。 */
     val rawResponse: String = "",
+    /**
+     * 本地预处理耗时（毫秒）：读 body、JSON 解析、改 model、脱敏等，
+     * 全都是网关自己算的，**不含任何网络时间**。
+     *
+     * 拆这个字段的原因：用户反馈「思考半天」，但分不清是网关算得慢还是上游慢。
+     * 在低端机上（如 Cortex-A76/A55）Gson 全量解析大 body 可能吃掉几百毫秒，
+     * 这个值能直接看出来。
+     */
+    val preprocessMillis: Long = 0,
+    /** 首字延迟（毫秒）：从发起上游请求到收到第一个内容块。思考型模型这项会很大。 */
+    val firstTokenMillis: Long = 0,
+    /** 上游耗时（毫秒）：从发起上游请求到流结束/响应完整。 */
+    val upstreamMillis: Long = 0,
 )
 
 /** 用量统计聚合。 */
