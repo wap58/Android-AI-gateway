@@ -61,14 +61,16 @@ class OpenCodeProvider(
     // ------------------------------------------------------------------ 模型
 
     override fun listModels(account: ProviderAccount?): ProviderModelCatalogView {
-        val models = catalog.models()
+        // 只保留免费模型：目录里 85 + 37 个绝大部分需要付费订阅，
+        // 列出来用户选中也只会拿到鉴权错误，纯属噪声。
+        val free = catalog.models().filter { isFreeModel(it.id) }
         return ProviderModelCatalogView(
-            models = models.map { m ->
+            models = free.map { m ->
                 ProviderModel(
                     id = m.id,
                     name = m.id,
                     extra = buildMap {
-                        if (isFreeModel(m.id)) put("free", "1")
+                        put("free", "1")
                         put("surface", m.surface)
                     },
                 )
