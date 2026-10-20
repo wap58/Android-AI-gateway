@@ -185,13 +185,37 @@ class RequestSanitizer(
             val matcher = pattern.matcher(current)
             if (matcher.find()) {
                 matched.add(word)
-                // 替换时保留原词的大小写，在字符间注入零宽字符
-                current = matcher.replaceAll { matchResult ->
-                    obfuscateWord(matchResult.group())
-                }
+                current = replaceAllSafe(matcher) { obfuscateWord(it) }
             }
         }
         return current to matched
+    }
+
+    /**
+     * 用 [Matcher.appendReplacement] 完成「按函数替换」。
+     *
+     * ## 为什么不用 matcher.replaceAll { }
+     *
+     * Kotlin 里 `matcher.replaceAll { ... }` 的尾随 lambda 会被编译成
+     * `Matcher.replaceAll(Function)` —— 这是 **Java 9 才引入**、Android 上
+     * **API 34（Android 14）才有** 的重载。在 Android 13 及以下调用会抛：
+     *
+     * ```
+     * NoSuchMethodError: No virtual method
+     *   replaceAll(Ljava/util/function/Function;)Ljava/lang/String;
+     *   in class Ljava/util/regex/Matcher;
+     * ```
+     *
+     * 而 appendReplacement/appendTail 从 Java 1.4 就有，全平台可用。
+     * 这个坑很隐蔽：编译期完全正常，只有低版本设备运行时才炸。
+     */
+    private inline fun replaceAllSafe(matcher: java.util.regex.Matcher, transform: (String) -> String): String {
+        val sb = StringBuilder()
+        while (matcher.find()) {
+            matcher.appendReplacement(sb, java.util.regex.Matcher.quoteReplacement(transform(matcher.group())))
+        }
+        matcher.appendTail(sb)
+        return sb.toString()
     }
 
     private fun recordEvidence(
