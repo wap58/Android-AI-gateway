@@ -1,7 +1,6 @@
 package dev.aigw.core.gateway
 
 import dev.aigw.core.provider.ProviderRegistry
-import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
@@ -44,12 +43,9 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
         ),
     )
 
-    registry.register(
-        AntigravityProvider(
-            hooks = engine.hooks,
-            nowMillis = { engine.now() },
-        ),
-    )
+    // Antigravity（Google 账号 OAuth）已从内置列表移除：
+    // 用户反馈用不上，且它的 OAuth 流程在部分网络环境下不可达。
+    // 实现类保留，需要时可在此处恢复注册。
 
     registry.register(
         CodeBuddyProvider(
