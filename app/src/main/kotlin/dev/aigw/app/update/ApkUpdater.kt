@@ -114,7 +114,9 @@ object ApkUpdater {
             "网络数据错误（可能是下载链接失效）"
         DownloadManager.ERROR_CANNOT_RESUME -> "无法续传，请重试"
         DownloadManager.ERROR_TOO_MANY_REDIRECTS -> "重定向次数过多"
-        DownloadManager.ERROR_NETWORK, DownloadManager.ERROR_NETWORK_UNMETERED -> "网络不可用"
+        DownloadManager.ERROR_DEVICE_NOT_FOUND -> "存储设备不可用"
+        DownloadManager.ERROR_FILE_ALREADY_EXISTS -> "同名文件已存在"
+        DownloadManager.ERROR_UNKNOWN -> "未知错误（请检查网络后重试）"
         else -> "下载失败（reason=$reason）"
     }
 
