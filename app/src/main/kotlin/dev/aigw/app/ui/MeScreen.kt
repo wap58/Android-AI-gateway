@@ -150,7 +150,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
-                text = "把多个上游供应商（Trae / Loomy / WorkBuddy / Antigravity / 自定义）" +
+                text = "把多个上游供应商（Trae / Loomy / WorkBuddy / 小浣熊 / 自定义）" +
                     "统一成一个 OpenAI 兼容端点，供任意客户端调用。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
