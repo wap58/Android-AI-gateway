@@ -13,6 +13,8 @@
     <uses-permission android:name="android.permission.BIND_QUICK_SETTINGS_TILE" />
     <!-- 可选的悬浮窗保活：在屏幕上留一个小窗，降低后台被系统回收的概率 -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- 应用内更新：下载 APK 后拉起系统安装器 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:name=".AiGatewayApp"
@@ -61,6 +63,21 @@
           provider 模块不会自动合并 Manifest，必须自己声明，authorities 必须是
           ${applicationId}.shizuku（写成 applicationId 而非硬编码包名，debug 包也能用）。
         -->
+        <!--
+          应用内更新：把缓存目录里的 APK 以 content:// 交给系统安装器。
+          authorities 必须用 ${applicationId} 而不是硬编码包名，
+          否则 debug 包（带 .debug 后缀）会因签名/权限不一致而失败。
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

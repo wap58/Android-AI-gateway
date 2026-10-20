@@ -287,9 +287,10 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.openReleasePage(info.url)
+                    // 应用内下载 + 自动拉起安装器；没有直链时才退回浏览器
+                    viewModel.startInAppUpdate()
                     viewModel.dismissUpdate()
-                }) { Text("前往下载") }
+                }) { Text(if (info.apkUrl.isEmpty()) "前往下载" else "立即更新") }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissUpdate() }) { Text("稍后") }

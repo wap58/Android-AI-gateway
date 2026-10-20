@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用内更新用：把下载到缓存目录的 APK 以 content:// 形式交给系统安装器。
+  Android 7.0+ 禁止直接传 file:// URI（FileUriExposedException），必须走 FileProvider。
+-->
+<paths>
+    <cache-path name="update" path="update/" />
+</paths>

@@ -170,7 +170,17 @@ class UpdateStore(private val store: KeyValueStore) {
 }
 
 /** 检查更新发现的新版本信息。 */
-data class UpdateInfo(val version: String, val url: String, val notes: String)
+/**
+ * 远端最新版本信息。
+ *
+ * @param apkUrl Release 里 APK 资产的直链；为空时只能跳浏览器下载
+ */
+data class UpdateInfo(
+    val version: String,
+    val url: String,
+    val notes: String,
+    val apkUrl: String = "",
+)
 
 sealed interface ModelTestStatus {
     data object Testing : ModelTestStatus
@@ -1606,6 +1616,63 @@ class AppViewModel(
         }
     }
 
+    // ------------------------------------------------------------------ 应用内更新
+
+    /**
+     * 应用内下载最新 APK。
+     *
+     * 没有 APK 直链（Release 里没传资产）时退回浏览器，不给用户一个「点了没反应」的按钮。
+     */
+    fun startInAppUpdate() {
+        val info = _state.value.updateInfo ?: return
+        if (info.apkUrl.isEmpty()) {
+            notice("该版本没有提供安装包直链，已打开下载页")
+            openReleasePage(info.url)
+            return
+        }
+        val id = dev.aigw.app.update.ApkUpdater.download(app, info.apkUrl, info.version)
+        if (id < 0) {
+            notice("下载启动失败，已改为打开下载页")
+            openReleasePage(info.url)
+            return
+        }
+        notice("开始下载，完成后会弹出安装")
+        watchDownload(info.version)
+    }
+
+    /** 轮询下载状态：完成就拉起安装器，失败就提示。 */
+    private fun watchDownload(version: String) {
+        viewModelScope.launch {
+            repeat(600) {  // 最多等 10 分钟（每 2 秒一次）
+                delay(2_000)
+                when (val st = dev.aigw.app.update.ApkUpdater.downloadState(app)) {
+                    dev.aigw.app.update.ApkUpdater.DownloadState.Done -> {
+                        val uri = dev.aigw.app.update.ApkUpdater.downloadedUri(app)
+                        if (uri == null) {
+                            notice("下载完成但无法读取安装包")
+                            return@launch
+                        }
+                        // 未授权「安装未知应用」时先引导授权，下次点更新即可直接装
+                        if (!dev.aigw.app.update.ApkUpdater.canInstall(app)) {
+                            notice("请先允许「安装未知应用」，然后到 ${dev.aigw.app.update.ApkUpdater.downloadDirLabel()} 手动安装")
+                            dev.aigw.app.update.ApkUpdater.openInstallPermission(app)
+                            return@launch
+                        }
+                        val err = dev.aigw.app.update.ApkUpdater.install(app, uri)
+                        if (err != null) notice(err)
+                        return@launch
+                    }
+                    is dev.aigw.app.update.ApkUpdater.DownloadState.Failed -> {
+                        notice("下载失败：${st.message}")
+                        return@launch
+                    }
+                    else -> Unit
+                }
+            }
+            notice("下载超时，请到 ${dev.aigw.app.update.ApkUpdater.downloadDirLabel()} 查看")
+        }
+    }
+
     /**
      * 检查更新的统一实现。
      *
@@ -1656,7 +1723,13 @@ class AppViewModel(
             if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
             val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }
             val notes = obj.get("body")?.asString.orEmpty().trim()
-            return UpdateInfo(version = version, url = url, notes = notes)
+            // 找 APK 资产直链：有了它才能应用内下载，否则只能跳浏览器
+            val apkUrl = obj.getAsJsonArray("assets")
+                ?.mapNotNull { it.asJsonObject }
+                ?.firstOrNull { it.get("name")?.asString?.endsWith(".apk", ignoreCase = true) == true }
+                ?.get("browser_download_url")?.asString
+                .orEmpty()
+            return UpdateInfo(version = version, url = url, notes = notes, apkUrl = apkUrl)
         } finally {
             conn.disconnect()
         }
