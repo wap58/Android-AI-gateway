@@ -31,6 +31,9 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
     val clipboard = LocalClipboardManager.current
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
+    var bodyLimit by remember(settings.maxRequestBodyMb) {
+        mutableStateOf(settings.maxRequestBodyMb.toString())
+    }
 
     PageScaffold(
         title = "接入设置",
@@ -73,6 +76,54 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
         }
 
         SectionCard(enterIndex = 2) {
+            SectionLabel("请求体上限")
+            Text(
+                text = "长对话（上千轮）会把完整历史塞进请求体，容易撞上限并收到 413。" +
+                    "按实际场景调大即可；解析时内存峰值约为上限的 2~3 倍。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedTextField(
+                value = bodyLimit,
+                onValueChange = { bodyLimit = it.filter(Char::isDigit).take(4) },
+                label = { Text("上限（MB，${dev.aigw.core.gateway.MIN_MAX_BODY_MB}~${dev.aigw.core.gateway.MAX_MAX_BODY_MB}）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            ChoiceChip(
+                text = "保存",
+                selected = false,
+                onClick = {
+                    val mb = bodyLimit.toIntOrNull()
+                    if (mb == null) {
+                        Toast.makeText(context, "请输入数字", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val fixed = mb.coerceIn(
+                            dev.aigw.core.gateway.MIN_MAX_BODY_MB,
+                            dev.aigw.core.gateway.MAX_MAX_BODY_MB,
+                        )
+                        bodyLimit = fixed.toString()
+                        viewModel.updateSettings(settings.copy(maxRequestBodyMb = fixed))
+                        Toast.makeText(context, "已设为 ${fixed}MB", Toast.LENGTH_SHORT).show()
+                    }
+                },
+            )
+            // 快捷档位：常用值一键切换，省得手输
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(8, 16, 32, 64).forEach { mb ->
+                    ChoiceChip(
+                        text = "${mb}MB",
+                        selected = settings.maxRequestBodyMb == mb,
+                        onClick = {
+                            bodyLimit = mb.toString()
+                            viewModel.updateSettings(settings.copy(maxRequestBodyMb = mb))
+                        },
+                    )
+                }
+            }
+        }
+
+        SectionCard(enterIndex = 3) {
             SectionLabel("API Key")
             OutlinedTextField(
                 value = apiKey,
@@ -93,7 +144,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
             }
         }
 
-        SectionCard(enterIndex = 3) {
+        SectionCard(enterIndex = 4) {
             SectionLabel("默认供应商")
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
@@ -110,7 +161,7 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
             }
         }
 
-        SectionCard(enterIndex = 4) {
+        SectionCard(enterIndex = 5) {
             OutlineActionButton("保存") {
                 val parsed = port.toIntOrNull()
                 if (parsed == null || parsed !in 1024..65535) {

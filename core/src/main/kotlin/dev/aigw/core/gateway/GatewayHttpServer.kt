@@ -203,10 +203,11 @@ class GatewayHttpServer(
             } else {
                 "未知（分块传输）"
             }
-            log("请求体超限被拒：声明大小 $actual，上限 ${MAX_BODY_BYTES / (1024 * 1024)}MB")
+            val limitMb = engine.settings().maxRequestBodyMb
+            log("请求体超限被拒：声明大小 $actual，上限 ${limitMb}MB")
             return errorResponse(
                 413, "payload_too_large",
-                "请求体 ${actual}，超过网关 ${MAX_BODY_BYTES / (1024 * 1024)}MB 上限",
+                "请求体 ${actual}，超过网关 ${limitMb}MB 上限（可在设置里调整）",
             )
         }
         if (body.isEmpty()) {
@@ -907,15 +908,20 @@ class GatewayHttpServer(
      * NanoHTTPD 自身不处理 `Transfer-Encoding: chunked` 的请求体，如果按「读到 EOF」去读会一直
      * 阻塞到连接关闭，所以这里自己解分块帧。
      */
+    /** 当前生效的请求体上限（字节）。每次读配置，用户改了立刻生效，无需重启网关。 */
+    private fun maxBodyBytes(): Int =
+        engine.settings().maxRequestBodyMb.coerceIn(MIN_MAX_BODY_MB, MAX_MAX_BODY_MB) * 1024 * 1024
+
     private fun readBody(session: NanoHTTPD.IHTTPSession): Pair<String, BodyReadResult> {
         val input: InputStream = session.inputStream
         val out = ByteArrayOutputStream()
         val transferEncoding = session.headers["transfer-encoding"].orEmpty()
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: -1L
 
+        val limit = maxBodyBytes()
         val result = when {
-            transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, out)
-            declared > 0 -> readExactly(input, out, declared)
+            transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, out, limit)
+            declared > 0 -> readExactly(input, out, declared, limit)
             else -> BodyReadResult.COMPLETE
         }
         // Gson 不接受 UTF-8 BOM，客户端带上时合法 JSON 会被误判
@@ -929,14 +935,20 @@ class GatewayHttpServer(
         val transferEncoding = session.headers["transfer-encoding"].orEmpty()
         val declared = session.headers["content-length"]?.trim()?.toLongOrNull() ?: -1L
         try {
+            val limit = maxBodyBytes()
             when {
-                transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, sink)
-                declared > 0 -> readExactly(input, sink, declared)
+                transferEncoding.contains("chunked", ignoreCase = true) -> readChunked(input, sink, limit)
+                declared > 0 -> readExactly(input, sink, declared, limit)
             }
         } catch (_: IOException) {}
     }
 
-    private fun readExactly(input: InputStream, out: ByteArrayOutputStream, length: Long): BodyReadResult {
+    private fun readExactly(
+        input: InputStream,
+        out: ByteArrayOutputStream,
+        length: Long,
+        limit: Int,
+    ): BodyReadResult {
         val buffer = ByteArray(8192)
         var remaining = length
         var discarded = false
@@ -944,14 +956,18 @@ class GatewayHttpServer(
             val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
             if (read < 0) return if (discarded) BodyReadResult.OVER_LIMIT else BodyReadResult.INCOMPLETE
             // 超限后继续读但丢弃，保证 Content-Length 范围内的字节被消费完，连接上不留残留
-            if (out.size() < MAX_BODY_BYTES) out.write(buffer, 0, read) else discarded = true
+            if (out.size() < limit) out.write(buffer, 0, read) else discarded = true
             remaining -= read
         }
         return if (discarded) BodyReadResult.OVER_LIMIT else BodyReadResult.COMPLETE
     }
 
     /** 解 `大小\r\n数据\r\n` 直到 0 号结束块。 */
-    private fun readChunked(input: InputStream, out: ByteArrayOutputStream): BodyReadResult {
+    private fun readChunked(
+        input: InputStream,
+        out: ByteArrayOutputStream,
+        limit: Int,
+    ): BodyReadResult {
         val buffer = ByteArray(8192)
         var discarded = false
         while (true) {
@@ -963,7 +979,7 @@ class GatewayHttpServer(
             while (remaining > 0) {
                 val read = input.read(buffer, 0, minOf(buffer.size, remaining))
                 if (read < 0) return BodyReadResult.INCOMPLETE
-                if (out.size() < MAX_BODY_BYTES) out.write(buffer, 0, read) else discarded = true
+                if (out.size() < limit) out.write(buffer, 0, read) else discarded = true
                 remaining -= read
             }
             readAsciiLine(input)
@@ -1168,16 +1184,6 @@ class GatewayHttpServer(
     private fun log(text: String) = engine.log(text)
 
     companion object {
-        /**
-         * 请求体上限。
-         *
-         * 原来 8MB 对大上下文客户端偏小：带图片 base64 或多轮长对话时
-         * 单次请求很容易超过，客户端只会看到 413，很难判断是「真的太大」还是「限制太小」。
-         * 32MB 覆盖实际使用场景，同时仍在低端机内存可承受范围内
-         * （解析时峰值约为 body 的 2~3 倍）。
-         */
-        const val MAX_BODY_BYTES = 32 * 1024 * 1024
-
         /** `/v1/credits` 并行拉取的单家预算；上游半挂时不能让请求线程无限等。 */
         private const val CREDITS_FETCH_TIMEOUT_SECONDS = 20L
 

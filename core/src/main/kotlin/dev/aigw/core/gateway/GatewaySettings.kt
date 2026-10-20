@@ -8,6 +8,11 @@ import dev.aigw.core.util.arrayOrNull
 import dev.aigw.core.util.objOrNull
 
 /** 网关的全局运行参数（与具体供应商无关）。 */
+/** 请求体上限的允许范围（MB）。下限防止误设成 0 直接不可用，上限防止撑爆内存。 */
+const val MIN_MAX_BODY_MB = 4
+const val MAX_MAX_BODY_MB = 256
+const val DEFAULT_MAX_BODY_MB = 32
+
 data class GatewaySettings(
     val port: Int = DEFAULT_PORT,
     /** 客户端调用网关时要带的 API Key；为空表示不校验。 */
@@ -25,6 +30,14 @@ data class GatewaySettings(
     val exposeLan: Boolean = false,
     /** 「只看可用模型」开关：隐藏上游的非对话内部条目。 */
     val onlyUsableModels: Boolean = false,
+    /**
+     * 单次请求体上限（MB）。
+     *
+     * 长对话（如上千轮）会把完整历史塞进 body，8MB 很容易不够用，
+     * 客户端只会看到 413 却不知道限制在哪。做成可配置后由用户按自己场景决定。
+     * 上限受内存约束：解析时峰值约为 body 的 2~3 倍。
+     */
+    val maxRequestBodyMb: Int = DEFAULT_MAX_BODY_MB,
     /** token 预刷新窗口（秒）：临期多久内才刷新。 */
     val refreshSkewSeconds: Long = 300L,
     /** 单次请求最多换号次数。 */
@@ -46,6 +59,7 @@ data class GatewaySettings(
         addProperty("allowNoKey", allowNoKey)
         addProperty("exposeLan", exposeLan)
         addProperty("onlyUsableModels", onlyUsableModels)
+        addProperty("maxRequestBodyMb", maxRequestBodyMb)
         addProperty("refreshSkewSeconds", refreshSkewSeconds)
         addProperty("maxRotate", maxRotate)
         addProperty("verboseLogging", verboseLogging)
@@ -94,6 +108,8 @@ data class GatewaySettings(
                 allowNoKey = obj.boolOr("allowNoKey", defaults.allowNoKey),
                 exposeLan = obj.boolOr("exposeLan", defaults.exposeLan),
                 onlyUsableModels = obj.boolOr("onlyUsableModels", defaults.onlyUsableModels),
+                maxRequestBodyMb = obj.intOr("maxRequestBodyMb", defaults.maxRequestBodyMb)
+                    .coerceIn(MIN_MAX_BODY_MB, MAX_MAX_BODY_MB),
                 refreshSkewSeconds = clampRefreshSkew(obj.longOr("refreshSkewSeconds", defaults.refreshSkewSeconds)),
                 maxRotate = obj.intOr("maxRotate", defaults.maxRotate),
                 verboseLogging = obj.boolOr("verboseLogging", defaults.verboseLogging),

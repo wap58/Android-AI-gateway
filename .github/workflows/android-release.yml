@@ -65,7 +65,13 @@ jobs:
         id: changelog
         run: |
           # 只汇总影响应用的改动（app/ 与 core/），CI、脚本、文档等非应用变化不进日志。
-          PREV_TAG=$(git tag --sort=-v:refname | grep -v "^v${{ steps.version.outputs.version }}$" | head -n1)
+          # 只认本项目的 v0.* 版本 tag。
+          # 这个仓库是 fork，原项目遗留了 v1.0.0 / v2.12.1 等大量旧 tag；
+          # 若直接按版本排序取上一个，会得到 v2.12.1，发布说明就写成「v2.12.1 → v0.0.x」。
+          PREV_TAG=$(git tag --sort=-v:refname \
+            | grep -E '^v0\.([0-9]+\.)*[0-9]+$' \
+            | grep -v "^v${{ steps.version.outputs.version }}$" \
+            | head -n1)
           RANGE="HEAD"
           [ -n "$PREV_TAG" ] && RANGE="$PREV_TAG..HEAD"
           LOG=$(git log $RANGE --no-merges --pretty='- %s' -- app core)

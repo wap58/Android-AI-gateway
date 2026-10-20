@@ -37,9 +37,11 @@ android {
         // 版本策略（用户指定）：版本名冻结在 0.0.6 作为正式 release 基线，
         // 之后只递增 versionCode 走 CI 测试包，攒够一波改动再统一发新 release。
         // 0.0.7：修复守护拉起失效、Sui 增强命令覆盖、状态不刷新等一批问题后发布
-        // 0.0.8：修复 Android 13 脱敏崩溃、补调用耗时拆解（本地/首字/上游）
-        versionCode = 25
-        versionName = "0.0.8"
+        // 版本号策略（用户指定）：versionName 末位带 versionCode，
+        // 形如 0.0.9.26 —— 这样“只升 code 不升主版本”时，
+        // 更新检测（只比 versionName）依然能识别出「有新版本」。
+        versionCode = 26
+        versionName = "0.0.9.26"
     }
 
     buildFeatures {
