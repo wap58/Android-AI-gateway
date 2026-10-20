@@ -4,6 +4,7 @@ import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.core.util.arrayOrNull
+import dev.aigw.core.util.asObjectOrNull
 import dev.aigw.core.util.objOrNull
 import dev.aigw.core.util.stringOrNull
 
@@ -66,7 +67,7 @@ internal object OpenCodeGate {
 
         // 客户端自带的下游工具：非保留名原样保留；保留名且参数非空也算「已带」
         obj.arrayOrNull("tools")?.forEach { element ->
-            val tool = element.objOrNull() ?: return@forEach
+            val tool = element.asObjectOrNull() ?: return@forEach
             val name = toolName(tool)
             if (name !in TOOL_NAMES) {
                 if (!toolChoiceNone) kept.add(tool)
@@ -109,7 +110,7 @@ internal object OpenCodeGate {
     private fun appendPlaceholderNote(obj: JsonObject) {
         val messages = obj.arrayOrNull("messages") ?: return
         for (element in messages) {
-            val msg = element.objOrNull() ?: continue
+            val msg = element.asObjectOrNull() ?: continue
             val role = msg.stringOrNull("role").orEmpty()
             if (role != "system" && role != "developer") continue
             val content = msg.get("content") ?: continue
