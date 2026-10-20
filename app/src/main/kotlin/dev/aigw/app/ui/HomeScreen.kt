@@ -121,12 +121,20 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
+                // 签到按钮：今天成功签过就置灰且不可点（一眼看出已完成）；
+                // 失败或还没签则保持高亮，方便手动补一次。
+                val done = state.checkedInToday
                 Box(
                     modifier = Modifier
                         .weight(1f)
                         .clip(MaterialTheme.shapes.medium)
-                        .background(MaterialTheme.colorScheme.onSurface)
-                        .clickable { viewModel.checkinAll() }
+                        .background(
+                            if (done) MaterialTheme.colorScheme.surfaceVariant
+                            else MaterialTheme.colorScheme.onSurface,
+                        )
+                        .then(
+                            if (done) Modifier else Modifier.clickable { viewModel.checkinAll() },
+                        )
                         .padding(vertical = 12.dp),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -134,11 +142,16 @@ fun HomeScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Box(Modifier.size(6.dp).clip(CircleShape).background(gold))
+                        Box(
+                            Modifier.size(6.dp).clip(CircleShape).background(
+                                if (done) MaterialTheme.colorScheme.onSurfaceVariant else gold,
+                            ),
+                        )
                         Text(
-                            "批量签到",
+                            if (done) "今日已签到" else "批量签到",
                             style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.surface,
+                            color = if (done) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.surface,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
@@ -160,6 +173,23 @@ fun HomeScreen(
                     )
                 }
             }
+            // 自动签到结果：启动 5 分钟后自动跑一轮，这里如实显示成功还是失败
+            if (state.checkinStatusText.isNotEmpty()) {
+                Text(
+                    text = state.checkinStatusText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = if (state.checkedInToday) {
+                    "自动签到已完成 · 明天自动恢复"
+                } else {
+                    "启动 5 分钟后自动签到；失败可手动重试"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         AntigravityQuotaSection(state, viewModel, baseIndex = 4)

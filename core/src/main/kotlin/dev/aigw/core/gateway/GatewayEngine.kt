@@ -326,6 +326,80 @@ class GatewayEngine(
                 startupDataListener?.invoke()
             }
         }
+        // 自动签到：引擎存活期间每分钟检查一次，启动满 5 分钟且今天没成功过就执行。
+        // 不放 start() 里，是因为用户可能只开 App 不开网关，签到不该被网关状态绑架。
+        autoCheckin.start()
+    }
+
+    /** 自动签到配置（界面读写）。 */
+    val autoCheckinPrefs: dev.aigw.core.usage.AutoCheckinPrefs by lazy {
+        dev.aigw.core.usage.AutoCheckinPrefs(store)
+    }
+
+    private val autoCheckin: dev.aigw.core.gateway.AutoCheckinScheduler by lazy {
+        dev.aigw.core.gateway.AutoCheckinScheduler(
+            scheduler = scheduler,
+            prefs = autoCheckinPrefs,
+            runCheckin = { performAutoCheckin() },
+            nowMillis = nowMillis,
+        )
+    }
+
+    /**
+     * 执行一轮批量签到，返回给界面看的结果摘要。
+     *
+     * 只对**支持签到能力**的账号执行；国际版没有签到制度，跳过而不是让它报错。
+     */
+    /**
+     * 对所有供应商执行「每日领取」。
+     *
+     * 各家的动作名并不统一，必须按能力分发：
+     * - CHECKIN 能力（Trae / WorkBuddy / 小浣熊）→ `ACTION_CHECKIN`
+     * - TASKS 能力但无 CHECKIN（Loomy）→ `ACTION_COMPLETE_ALL_TASKS`
+     *
+     * 之前只跑 `ACTION_CHECKIN`，Loomy 因为只有 TASKS 能力被整段跳过，
+     * 用户看到的就是「Loomy 从来不自动签到」。
+     *
+     * 返回值：全部成功才为 true（有失败就让首页按钮保持可点，方便手动重试）。
+     */
+    private fun performAutoCheckin(): Boolean {
+        val infos = providers().filter { it.enabled }
+        val groups = ArrayList<Pair<String, List<BatchTarget>>>()
+        for (info in infos) {
+            val action = when {
+                dev.aigw.core.provider.ProviderCapability.CHECKIN in info.capabilities ->
+                    ACTION_CHECKIN
+                dev.aigw.core.provider.ProviderCapability.TASKS in info.capabilities ->
+                    "complete_all_tasks"
+                else -> continue
+            }
+            val targets = accounts(info.id).map { BatchTarget(it.providerId, it.uid) }
+            if (targets.isNotEmpty()) groups.add(action to targets)
+        }
+        if (groups.isEmpty()) {
+            autoCheckinPrefs.setLastResult(false, "没有支持签到/任务的账号")
+            return false
+        }
+
+        var ok = 0
+        var total = 0
+        val failures = ArrayList<String>()
+        for ((action, targets) in groups) {
+            val results = runCatching { performActionAll(targets, action) }.getOrElse { emptyList() }
+            total += results.size
+            ok += results.count { it.ok }
+            results.filter { !it.ok }.forEach {
+                failures.add("${it.nickname.ifEmpty { it.uid }}：${it.message}")
+            }
+        }
+        val failed = total - ok
+        val text = buildString {
+            append("签到 $ok/$total")
+            if (failed > 0) append("，失败 $failed")
+            if (failures.isNotEmpty()) append("（${failures.take(3).joinToString("；")}）")
+        }
+        autoCheckinPrefs.setLastResult(failed == 0, text)
+        return failed == 0
     }
 
     /**

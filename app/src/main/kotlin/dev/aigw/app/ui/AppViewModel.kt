@@ -275,6 +275,10 @@ data class AppUiState(
     val autoStart: Boolean = false,
     /** 隐藏多任务：离开应用后从最近任务列表移除。 */
     val hideRecents: Boolean = false,
+    /** 今天是否已签到成功（成功则首页按钮置灰）。 */
+    val checkedInToday: Boolean = false,
+    /** 上次签到结果文案（成功/失败都会写，界面直接展示）。 */
+    val checkinStatusText: String = "",
     /**
      * Root 守护的实测状态（null 表示还没查过）。
      *
@@ -334,6 +338,8 @@ private class Snapshot(
     val overlayKeepAlive: Boolean,
     val autoStart: Boolean,
     val hideRecents: Boolean,
+    val checkedInToday: Boolean,
+    val checkinStatusText: String,
 )
 
 class AppViewModel(
@@ -436,6 +442,8 @@ class AppViewModel(
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     autoStart = dev.aigw.app.data.KeepAlivePrefs.autoStartEnabled(engine.store()),
                     hideRecents = dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
+                    checkedInToday = engine.autoCheckinPrefs.isCheckedToday(System.currentTimeMillis()),
+                    checkinStatusText = engine.autoCheckinPrefs.lastResultParsed().second,
                 )
             }
             _state.value = _state.value.copy(
@@ -463,6 +471,8 @@ class AppViewModel(
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 autoStart = snapshot.autoStart,
                 hideRecents = snapshot.hideRecents,
+                checkedInToday = snapshot.checkedInToday,
+                checkinStatusText = snapshot.checkinStatusText,
             )
         }
     }
