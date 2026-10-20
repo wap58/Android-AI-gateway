@@ -306,6 +306,20 @@ class GatewayEngine(
     @Volatile
     private var startupDataListener: (() -> Unit)? = null
 
+    /** 自动签到配置（界面读写）。 */
+    val autoCheckinPrefs: dev.aigw.core.usage.AutoCheckinPrefs by lazy {
+        dev.aigw.core.usage.AutoCheckinPrefs(store)
+    }
+
+    private val autoCheckin: dev.aigw.core.gateway.AutoCheckinScheduler by lazy {
+        dev.aigw.core.gateway.AutoCheckinScheduler(
+            scheduler = scheduler,
+            prefs = autoCheckinPrefs,
+            runCheckin = { performAutoCheckin() },
+            nowMillis = nowMillis,
+        )
+    }
+
     init {
         registerBuiltinProviders(this)
         reloadCustomProviders()
@@ -329,20 +343,6 @@ class GatewayEngine(
         // 自动签到：引擎存活期间每分钟检查一次，启动满 5 分钟且今天没成功过就执行。
         // 不放 start() 里，是因为用户可能只开 App 不开网关，签到不该被网关状态绑架。
         autoCheckin.start()
-    }
-
-    /** 自动签到配置（界面读写）。 */
-    val autoCheckinPrefs: dev.aigw.core.usage.AutoCheckinPrefs by lazy {
-        dev.aigw.core.usage.AutoCheckinPrefs(store)
-    }
-
-    private val autoCheckin: dev.aigw.core.gateway.AutoCheckinScheduler by lazy {
-        dev.aigw.core.gateway.AutoCheckinScheduler(
-            scheduler = scheduler,
-            prefs = autoCheckinPrefs,
-            runCheckin = { performAutoCheckin() },
-            nowMillis = nowMillis,
-        )
     }
 
     /**
