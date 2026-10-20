@@ -3,6 +3,7 @@ package dev.aigw.core.gateway
 import dev.aigw.core.provider.ProviderRegistry
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
+import dev.aigw.core.provider.opencode.OpenCodeProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeConstants
 import dev.aigw.core.provider.trae.TraeProvider
@@ -60,4 +61,20 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
             nowMillis = { engine.now() },
         ),
     )
+
+    // OpenCode 免费通道：不需要真实账号（凭据是公开哨兵 Bearer public），
+    // 但账号池按「provider + 账号」调度，所以补一个占位账号让它能被选中。
+    // 已经存在时不覆盖，避免每次启动都写盘。
+    val openCode = OpenCodeProvider(nowMillis = { engine.now() })
+    registry.register(openCode)
+    if (engine.pool.account(OpenCodeProvider.ID, OpenCodeProvider.PLACEHOLDER_UID) == null) {
+        engine.pool.upsert(
+            dev.aigw.core.provider.ProviderAccount(
+                providerId = OpenCodeProvider.ID,
+                uid = OpenCodeProvider.PLACEHOLDER_UID,
+                nickname = "公共免费通道",
+                secret = "{}",
+            ),
+        )
+    }
 }
