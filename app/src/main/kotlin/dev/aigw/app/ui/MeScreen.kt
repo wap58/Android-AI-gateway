@@ -88,62 +88,62 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
 
-        EditorialGroupHeader("01", "外观风格 · APPEARANCE")
+        EditorialGroupHeader("01", "外观风格")
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
             EditorialSwitchRow(
                 index = "01.1",
-                title = "动态取色 · DYNAMIC COLOR",
+                title = "动态取色",
                 subtitle = "跟随系统壁纸生成配色（Android 12 及以上）",
                 checked = state.dynamicColor,
                 onCheckedChange = { viewModel.setDynamicColor(it) },
             )
             EditorialRow(
                 "01.2",
-                "外观主题 · THEME",
+                "外观主题",
                 "明暗模式、配色方案与金色文字",
                 appearanceMeta(state),
             ) { open(SubPage.AppearanceTheme) }
         }
 
-        EditorialGroupHeader("02", "核心功能偏好 · CORE FUNCTIONS")
+        EditorialGroupHeader("02", "核心功能偏好")
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            EditorialRow("02.1", "接入设置 · ENDPOINTS", "端口与 API Key", ":${state.port}") { open(SubPage.ApiSettings) }
+            EditorialRow("02.1", "接入设置", "端口与 API Key", ":${state.port}") { open(SubPage.ApiSettings) }
             EditorialRow(
                 "02.2",
-                "安全防护 · SECURITY",
+                "安全防护",
                 "反审核脱敏与账号限速",
                 if (state.security.sanitizeEnabled) "脱敏开启" else "脱敏关闭",
             ) { open(SubPage.SecurityProtection) }
             EditorialRow(
                 "02.3",
-                "并发与容错 · RESILIENCE",
+                "并发与容错",
                 "并发闸门、重试退避与熔断器",
                 concurrencySummary(state.failover),
             ) { open(SubPage.Resilience) }
             EditorialRow(
                 "02.4",
-                "额度中心 · CREDITS",
+                "额度中心",
                 "按供应商查看额度包明细",
                 if (state.pool.creditsKnown > 0) formatCount(state.pool.totalCredits) else "",
             ) { open(SubPage.CreditCenter) }
-            EditorialRow("02.5", "用量统计 · TELEMETRY", "请求数、token 与成功率", formatTokens(state.today.totalTokens)) {
+            EditorialRow("02.5", "用量统计", "请求数、token 与成功率", formatTokens(state.today.totalTokens)) {
                 open(SubPage.Usage)
             }
             EditorialRow(
                 "02.6",
-                "代理设置 · NETWORK PROXY",
+                "代理设置",
                 "境外供应商需要走代理",
                 if (state.proxy.usable) "已启用" else "未启用",
             ) { open(SubPage.Proxy) }
             EditorialRow(
                 "02.7",
-                "保活与权限 · BACKGROUND",
+                "保活与权限",
                 "通知、电池优化与后台限制",
                 if (state.keepAlive?.allGood == true) "就绪" else "待配置",
             ) { open(SubPage.KeepAlive) }
         }
 
-        EditorialGroupHeader("03", "架构关于 · ABOUT THE ENGINE")
+        EditorialGroupHeader("03", "架构关于")
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = "天元鼎 · 本地 OpenAI 兼容网关",
@@ -164,14 +164,14 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
 
         EditorialRow(
             "04.1",
-            "检查更新 · CHECK UPDATE",
+            "检查更新",
             "从 GitHub Releases 获取最新版本",
             if (state.updateChecking) "检查中…" else "",
         ) { if (!state.updateChecking) viewModel.checkUpdate() }
 
         EditorialRow(
             "04.2",
-            "项目地址 · GITHUB",
+            "项目地址",
             "在浏览器打开源码仓库",
             "GitHub",
         ) { viewModel.openProjectRepo() }

@@ -116,7 +116,7 @@ fun HomeScreen(
         TrendCard(state)
 
         SectionCard(modifier = Modifier.staggeredAppear(3)) {
-            SectionHeader("快捷操作 · ACTIONS")
+            SectionHeader("快捷操作")
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -363,7 +363,7 @@ private fun TrendCard(state: AppUiState) {
     }
     val gold = LocalAppColors.current.goldStart
     SectionCard(modifier = Modifier.staggeredAppear(2)) {
-        SectionHeader("消耗趋势 · TREND", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
+        SectionHeader("消耗趋势", action = if (trend.isEmpty()) null else "近 ${trend.size} 天")
         if (drawable) {
             TrendChart(trend, startOfDay(System.currentTimeMillis()))
             Row(
@@ -552,7 +552,7 @@ private fun TileNote(text: String) {
 
 @Composable
 private fun ProvidersTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "供应商 · PROVIDERS") {
+    Tile(modifier, "供应商") {
         BigNumber(state.providers.size.toString())
         TileNote(
             if (state.providers.isEmpty()) "暂无供应商" else state.providers.joinToString(" · ") { it.displayName },
@@ -565,7 +565,7 @@ private fun ReadinessTile(state: AppUiState, modifier: Modifier) {
     val total = state.pool.total
     val usable = state.pool.usable
     val percent = if (total > 0) (usable.toFloat() / total * 100).toInt() else 0
-    Tile(modifier, "账号就绪 · READINESS") {
+    Tile(modifier, "账号就绪") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 BigNumber(usable.toString(), suffix = "/ $total")
@@ -617,7 +617,7 @@ private fun ReadinessRing(percent: Int, fraction: Float) {
 
 @Composable
 private fun ModelsTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "聚合模型 · MODELS") {
+    Tile(modifier, "聚合模型") {
         BigNumber(state.models.size.toString())
         TileNote(
             when {
@@ -631,7 +631,7 @@ private fun ModelsTile(state: AppUiState, modifier: Modifier) {
 
 @Composable
 private fun RequestsTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "今日请求 · REQUESTS") {
+    Tile(modifier, "今日请求") {
         BigNumber(formatCount(state.today.requests))
         // 增长需要真实昨日数据：daily 末尾是今天，倒数第二个才是昨天。
         val yesterday = if (state.daily.size >= 2) state.daily[state.daily.size - 2] else null
@@ -649,7 +649,7 @@ private fun RequestsTile(state: AppUiState, modifier: Modifier) {
 
 @Composable
 private fun TodayTokensTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "今日 TOKENS · TOKENS") {
+    Tile(modifier, "今日 Tokens") {
         BigNumber(formatTokens(state.today.totalTokens))
         TileNote("输入 ${formatTokens(state.today.promptTokens)} · 输出 ${formatTokens(state.today.completionTokens)}")
     }
@@ -659,7 +659,7 @@ private fun TodayTokensTile(state: AppUiState, modifier: Modifier) {
 private fun CreditsTile(state: AppUiState, modifier: Modifier) {
     val known = state.pool.creditsKnown > 0
     val goldText = LocalAppColors.current.goldText
-    Tile(modifier, "已知额度 · TOTAL CREDITS") {
+    Tile(modifier, "已知额度") {
         BigNumber(
             value = if (known) formatCount(state.pool.totalCredits) else "—",
             color = if (known) goldText else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -680,7 +680,7 @@ private fun AntigravityQuotaSection(state: AppUiState, viewModel: AppViewModel, 
     }
 
     SectionCard(modifier = Modifier.staggeredAppear(baseIndex)) {
-        SectionHeader("上游配额池 · ANTIGRAVITY QUOTA")
+        SectionHeader("上游配额池")
         for (account in accounts) {
             val packs = state.creditPacks["antigravity/${account.uid}"].orEmpty()
             if (accounts.size > 1) {

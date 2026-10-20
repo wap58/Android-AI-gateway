@@ -82,7 +82,7 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
         leading = { BackButton(onBack) },
     ) {
         // ---------------------------------------------------------- 01 明暗模式
-        EditorialGroupHeader("01", "明暗模式 · DISPLAY MODE", meta = "RADIO LIST")
+        EditorialGroupHeader("01", "明暗模式")
         SectionCard(enterIndex = 0) {
             ModeRow("自动 · 跟随系统", "跟随 Android 系统的深浅色设置自适应切换", state.themeMode == ThemeMode.System) {
                 viewModel.setThemeMode(ThemeMode.System)
@@ -98,7 +98,7 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
         }
 
         // ---------------------------------------------------------- 02 配色方案
-        EditorialGroupHeader("02", "配色方案 · COLOR PRESETS", meta = "CAPSULE CHIPS")
+        EditorialGroupHeader("02", "配色方案")
         SectionCard(enterIndex = 1) {
             Text(
                 text = "预设黑金系调色基调，切换后仅替换页面底色（卡片/表面色不变）：",
@@ -133,7 +133,7 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
         }
 
         // ---------------------------------------------------------- 03 金色文字
-        EditorialGroupHeader("03", "金色文字 · GOLD GRADIENT ACCENT", meta = "DUAL HUE WHEELS")
+        EditorialGroupHeader("03", "金色文字")
         SectionCard(enterIndex = 2) {
             Text(
                 text = "应用主色渐变由起始色与结束色插值生成，可拖动色相环或直接输入代码：",
@@ -145,13 +145,13 @@ fun AppearanceThemeScreen(state: AppUiState, viewModel: AppViewModel, onBack: ()
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 WheelColumn(
-                    title = "起始色 · START",
+                    title = "起始色",
                     color = state.goldStart,
                     modifier = Modifier.weight(1f),
                     onPick = { viewModel.setGoldColors(formatHex(it), formatHex(state.goldEnd)) },
                 )
                 WheelColumn(
-                    title = "结束色 · END",
+                    title = "结束色",
                     color = state.goldEnd,
                     modifier = Modifier.weight(1f),
                     onPick = { viewModel.setGoldColors(formatHex(state.goldStart), formatHex(it)) },
@@ -396,7 +396,7 @@ private fun GradientPreview(start: Color, end: Color) {
             )
         }
         Text(
-            text = "AI-GATEWAY · PRESTIGE 黑金渐变文字",
+            text = "黑金渐变文字",
             style = MaterialTheme.typography.headlineSmall.copy(
                 brush = Brush.horizontalGradient(listOf(start, end)),
                 fontWeight = FontWeight.Light,
