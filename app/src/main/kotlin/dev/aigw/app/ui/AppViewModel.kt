@@ -1623,6 +1623,9 @@ class AppViewModel(
      *
      * 没有 APK 直链（Release 里没传资产）时退回浏览器，不给用户一个「点了没反应」的按钮。
      */
+    /** 当前下载尝试到第几个地址（镜像失败会自动换下一个）。 */
+    private var downloadAttempt = 0
+
     fun startInAppUpdate() {
         val info = _state.value.updateInfo ?: return
         if (info.apkUrl.isEmpty()) {
@@ -1630,18 +1633,35 @@ class AppViewModel(
             openReleasePage(info.url)
             return
         }
-        val id = dev.aigw.app.update.ApkUpdater.download(app, info.apkUrl, info.version)
-        if (id < 0) {
-            notice("下载启动失败，已改为打开下载页")
+        downloadAttempt = 0
+        beginDownload(info)
+    }
+
+    /**
+     * 启动一次下载尝试。
+     *
+     * GitHub 直链在国内经常拉不动，所以优先走加速镜像；某个镜像失败时
+     * 自动换下一个（GitHub 直链留作最后兜底），避免「一次失败就让用户手动去点浏览器」。
+     */
+    private fun beginDownload(info: UpdateInfo) {
+        val candidates = dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
+        if (downloadAttempt >= candidates.size) {
+            notice("所有下载地址都失败了，已打开下载页")
             openReleasePage(info.url)
             return
         }
-        notice("开始下载，完成后会弹出安装")
-        watchDownload(info.version)
+        val id = dev.aigw.app.update.ApkUpdater.download(app, candidates[downloadAttempt], info.version)
+        if (id < 0) {
+            downloadAttempt++
+            beginDownload(info)
+            return
+        }
+        notice("开始下载（第 ${downloadAttempt + 1}/${candidates.size} 个地址），完成后会弹出安装")
+        watchDownload(info.version, info)
     }
 
     /** 轮询下载状态：完成就拉起安装器，失败就提示。 */
-    private fun watchDownload(version: String) {
+    private fun watchDownload(version: String, info: UpdateInfo) {
         viewModelScope.launch {
             repeat(600) {  // 最多等 10 分钟（每 2 秒一次）
                 delay(2_000)
@@ -1663,7 +1683,15 @@ class AppViewModel(
                         return@launch
                     }
                     is dev.aigw.app.update.ApkUpdater.DownloadState.Failed -> {
-                        notice("下载失败：${st.message}")
+                        // 镜像挂了就换下一个地址再试，别让用户看到一次失败就结束
+                        downloadAttempt++
+                        val next = dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
+                        if (downloadAttempt < next.size) {
+                            notice("该地址下载失败（${st.message}），正在换下一个…")
+                            beginDownload(info)
+                        } else {
+                            notice("下载失败：${st.message}")
+                        }
                         return@launch
                     }
                     else -> Unit

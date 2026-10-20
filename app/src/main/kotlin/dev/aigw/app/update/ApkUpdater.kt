@@ -32,6 +32,19 @@ object ApkUpdater {
     /** 下载子目录：公共下载目录下的 TYD（天元鼎缩写）。 */
     private const val SUBDIR = "TYD"
 
+    /**
+     * GitHub 加速镜像（按优先级）。
+     *
+     * 实测（2026-10-20，从移动网络）三个都能完整下载 1.8MB 的 APK：
+     * gh-proxy.com 1.9s / ghfast.top 2.3s / ghproxy.net 3.4s。
+     * 留多个是因为这类公益镜像随时可能下线，单点不可靠。
+     */
+    private val MIRRORS = listOf(
+        "https://gh-proxy.com/",
+        "https://ghfast.top/",
+        "https://ghproxy.net/",
+    )
+
     /** 下载任务 id → 已注册的完成监听（用 id 区分，避免多任务串扰）。 */
     private var activeDownloadId = -1L
 
@@ -65,6 +78,16 @@ object ApkUpdater {
         val id = runCatching { dm.enqueue(request) }.getOrNull() ?: return -1L
         activeDownloadId = id
         return id
+    }
+
+    /**
+     * 按顺序尝试的下载地址列表：镜像在前、GitHub 直链兜底。
+     *
+     * 之所以把直链放最后：国内网络下它最慢，但镜像全挂时它仍是唯一能用的。
+     */
+    fun downloadCandidates(original: String): List<String> {
+        if (!original.startsWith("https://github.com/")) return listOf(original)
+        return MIRRORS.map { it + original } + original
     }
 
     /** 下载目录（公共 Download/TYD），供界面提示用户去哪里找安装包。 */
