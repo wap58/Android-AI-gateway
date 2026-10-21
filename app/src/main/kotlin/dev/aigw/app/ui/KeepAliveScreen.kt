@@ -273,14 +273,26 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
             Text(
                 text = "守护脚本每 5 秒探活一次 http://127.0.0.1:${state.port}/healthz：进程没了立刻拉起，" +
-                    "进程在但端口不通连续 2 次就重启；期望状态持久化在 /data/adb，重启后照样恢复。" +
-                    "兼容 Magisk / KernelSU / APatch / Sui 及纯 su 环境。",
+                    "进程在但端口不通连续 2 次就重启；期望状态持久化在 /data/adb/tyd/，重启后照样恢复。" +
+                    "脚本固定放在 /data/adb/tyd/，一个脚本适配 Magisk / KernelSU / APatch / Sui 及纯 su，" +
+                    "不用按方案换目录。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             // 实测状态：装没装上、跑没跑起来，必须回读，不能只看按钮点过没有
             val rk = state.rootKeeper
+            // 探针没跑出结果时，先提示「读取失败」而不是展示一整排红叉 ——
+            // 那些红叉会把「守护其实在跑」误导成「彻底坏了」。
+            if (rk != null && rk.probeFailed) {
+                Text(
+                    text = "⚠ 状态读取失败（探针未能执行）。已知守护进程：" +
+                        (if (rk.processAlive) "在跑（PID ${rk.pid}）" else "未检测到") +
+                        "。其余项目下轮重试；若持续失败请点「重装」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
             if (rk == null) {
                 Text(
                     text = "正在查询守护状态…",
@@ -309,7 +321,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 RootStatusLine(
                     label = "开机目录",
                     ok = rk.registeredDirs.isNotEmpty(),
-                    text = if (rk.registeredDirs.isEmpty()) "未铺设（无框架或权限不足）"
+                    text = if (rk.registeredDirs.isEmpty()) "无（系统没有 service.d，重启后需重开应用）"
                     else rk.registeredDirs.joinToString("、") { it.substringAfterLast('/') },
                 )
                 RootStatusLine(

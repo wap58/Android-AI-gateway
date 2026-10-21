@@ -28,24 +28,40 @@ PORT=8877
 PID=$(pgrep -f "$NAME\$" 2>/dev/null | head -n 1)
 echo "PID=$PID"
 
-# ---- Root 方案（按框架自己的标志文件判定，不看目录是否存在）
-if [ -f /data/adb/magisk/magisk ]; then
-  echo "FLAVOR=Magisk"
-elif [ -d /data/adb/ksu/bin ]; then
+# ---- Root 方案
+# 判据要宽：不同版本/不同分支的目录布局不完全一样，
+# 只看 /data/adb/ap/bin 会在部分 APatch 上认不出来（表现为「Root 方案：未知」）。
+if [ -f /data/adb/magisk/magisk ] || [ -d /data/adb/magisk ]; then
+  if [ -d /data/adb/ksu ] && [ ! -d /data/adb/magisk ]; then
+    echo "FLAVOR=KernelSU/Sukisu"
+  elif [ -f /data/adb/apd ] || [ -d /data/adb/ap ]; then
+    # APatch 也可能同时带 magisk 兼容目录，用 apd/ap 优先判定
+    echo "FLAVOR=APatch"
+  else
+    echo "FLAVOR=Magisk"
+  fi
+elif [ -d /data/adb/ksu ]; then
   echo "FLAVOR=KernelSU/Sukisu"
-elif [ -d /data/adb/ap/bin ]; then
+elif [ -f /data/adb/apd ] || [ -d /data/adb/ap ]; then
   echo "FLAVOR=APatch"
+elif [ -d /data/adb/modules ]; then
+  # 有 modules 目录但没识别出具体框架：至少说明是模块化 root
+  echo "FLAVOR=Magisk 系"
 else
   echo "FLAVOR=纯 su"
 fi
 
 # ---- 期望状态（root 域持久文件）
-echo "STATE=$(cat /data/adb/tyd_keepalive.state 2>/dev/null | tr -d ' \r\n')"
+echo "STATE=$(cat /data/adb/tyd/state 2>/dev/null | tr -d ' \r\n')"
 
 # ---- 磁盘上脚本的版本
-echo "VER=$(grep -m1 '^VER=' "$SCRIPT" 2>/dev/null | sed 's/^VER=//; s/"//g')"
+# 版本取「真身」/data/adb/tyd/tyd_keepalive.sh —— 它才是真正在跑的那份
+echo "VER=$(grep -m1 '^VER=' /data/adb/tyd/tyd_keepalive.sh 2>/dev/null | sed 's/^VER=//; s/"//g')"
 
-# ---- 探活：直接复用守护脚本自己的判定，保证两边结论一致
+# ---- 探活：优先用 /data/adb/tyd 里的真身（它一定可读），没装过才用传入的路径
+if [ -f /data/adb/tyd/tyd_keepalive.sh ]; then
+  SCRIPT=/data/adb/tyd/tyd_keepalive.sh
+fi
 if [ -n "$SCRIPT" ] && [ -f "$SCRIPT" ]; then
   echo "PROBE=$(sh "$SCRIPT" probe 2>/dev/null)"
 else
@@ -54,7 +70,7 @@ fi
 
 # ---- 已铺设的开机目录
 DIRS=""
-for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d; do
+for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d /data/adb/post-fs-data.d; do
   if [ -f "$d/$NAME" ]; then
     if [ -z "$DIRS" ]; then DIRS="$d"; else DIRS="$DIRS,$d"; fi
   fi

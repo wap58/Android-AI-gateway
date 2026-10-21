@@ -9,39 +9,60 @@ import java.util.concurrent.TimeUnit
 /**
  * Root 守护的一键安装 / 卸载 / 状态查询。
  *
- * ## 为什么不是「把脚本丢进 /data/adb/service.d 就完事」
+ * ## 一个脚本适配所有 Root 方案
  *
- * `/data/adb/service.d/` 是 **Magisk** 的约定，只有 Magisk 的 init 服务会去执行它。
- * KernelSU / APatch 用的是另一套（`/data/adb/ksu/service.d/`、`/data/adb/ap/service.d/`），
- * 纯 `su` 环境更是没有任何人负责执行这个目录。
+ * 真身只有一份，固定在 `/data/adb/tyd/`：
+ * ```
+ * /data/adb/tyd/tyd_keepalive.sh   守护脚本
+ * /data/adb/tyd/probe.sh           自检探针
+ * /data/adb/tyd/state              期望状态（on <端口> <开机恢复> / off）
+ * /data/adb/tyd/keepalive.log      运行日志
+ * ```
+ * root 方案（Magisk / KernelSU / APatch / 纯 su）只影响**谁在开机时执行**，
+ * 所以我们在每个存在的开机目录里放一个 3 行的转发脚本：
+ * 它只做「真身存在吗 / 已经有守护在跑吗 / 拉起真身」三件事，
+ * 谁执行都行、同一目录执行几次也无害（转发脚本自己做单实例判断）。
  *
- * 所以这里的安装逻辑是**框架无关**的：
- * 1. 把脚本写到应用私有目录（免了 /data 的 SELinux 麻烦）
- * 2. 铺进所有已知框架的 service.d 目录（谁在跑都能吃到，谁也不跑也不报错）
- * 3. **立即用 setsid 拉起一个守护进程** —— 这一条与框架无关，任何拿到 su 的设备都生效
+ * 这样就不必再「先认框架再决定铺哪」—— 认错一次就整条链路失效
+ * （实测 APatch 各版本目录布局不一致，原来那套识别把它判成未知，脚本根本没铺进去）。
  *
- * 开机自启则由第 2 步的目录铺设在有框架的机器上兜底；没有框架的机器靠
- * APP 自己的开机广播拉起网关服务，本守护负责「被杀后复活」，两者互补。
+ * 纯 `su` 环境没有任何人负责执行开机目录，那种设备靠 APP 自己的开机广播兜底；
+ * 本守护负责「被杀后复活」，两者互补。
  */
 object RootKeeper {
 
     private const val SCRIPT_NAME = "tyd_keepalive.sh"
 
-    /** 自检探针：一次 su 调用取回全部守护状态（见 assets/rootkeep_probe.sh）。 */
-    private const val PROBE_SCRIPT_NAME = "rootkeep_probe.sh"
+    /** 部署到 root 域的自检探针文件名（固定 /data/adb/tyd/probe.sh）。 */
+    private const val PROBE_SCRIPT_NAME = "probe.sh"
 
-    /** 网关端口，必须与 GatewaySettings.DEFAULT_PORT 一致（探活用）。 */
-    private const val PORT = 8877
+    /** APK assets 里的探针文件名（保持不变，避免打包规则跟着改）。 */
+    private const val ASSET_PROBE = "rootkeep_probe.sh"
 
-    /** 守护脚本写日志的固定路径（与 assets/tyd_keepalive.sh 里的 LOG 保持一致）。 */
-    private const val LOG_PATH = "/data/adb/tyd_keepalive.log"
+    /** 开机目录里那个「转发脚本」的文件名（它只负责把 /data/adb/tyd 里的真身拉起来）。 */
+    private const val SHIM_NAME = "tyd_keepalive.sh"
 
     /**
-     * 守护状态真值（root 域，重启 / 清 App 数据都不丢）：
-     * on = 用户希望网关开着，off = 用户主动停止。
-     * App 每次启停都尝试改写；没有 root 时守护退回读 App 私有目录的标记文件。
+     * root 域的工作目录：**所有文件都固定在这里，与 root 方案无关**。
+     *
+     * 以前是「先识别 Magisk / KernelSU / APatch，再把脚本铺到对应的 service.d」——
+     * 识别错一次就全盘失效（APatch 的目录布局各版本不一致，实测认不出来 →
+     * 脚本没铺进去 → 开机不生效，界面还显示成「Root 方案未知」）。
+     *
+     * 现在只往这一个目录写：
+     *   /data/adb/tyd/tyd_keepalive.sh   守护脚本（唯一一份）
+     *   /data/adb/tyd/probe.sh           自检探针
+     *   /data/adb/tyd/state              期望状态（on <port> <autostart> / off）
+     *   /data/adb/tyd/keepalive.log      运行日志
+     * 再在**所有可能存在的**开机目录里放一个 3 行的转发脚本指向它，
+     * 谁执行都行、重复执行也无害（转发脚本自己做了单实例判断）。
      */
-    private const val STATE_PATH = "/data/adb/tyd_keepalive.state"
+    private const val BASE_DIR = "/data/adb/tyd"
+
+    private val SCRIPT_PATH get() = "$BASE_DIR/$SCRIPT_NAME"
+    private val PROBE_PATH get() = "$BASE_DIR/$PROBE_SCRIPT_NAME"
+    private val LOG_PATH get() = "$BASE_DIR/keepalive.log"
+    private val STATE_PATH get() = "$BASE_DIR/state"
 
     /** su 命令等待上限（秒）：用户不点授权框时不能永久卡住。 */
     private const val SU_TIMEOUT_SEC = 20L
@@ -101,6 +122,8 @@ object RootKeeper {
         val scriptVersion: String = "",
         /** assets 里随 APK 附带的版本；与 [scriptVersion] 不一致说明需要重装。 */
         val bundledVersion: String = "",
+        /** 探针脚本这次没跑出结果（读不到 / su 被拒）：其余字段不可信，界面要如实说明。 */
+        val probeFailed: Boolean = false,
     ) {
         /** 磁盘脚本是否落后于 APK（需要用户点一次「重装」）。 */
         val outdated: Boolean
@@ -127,50 +150,54 @@ object RootKeeper {
             return Result.Failed("读取内置脚本失败：${e.message}")
         }
 
-        // 私有目录路径要能被 su 进程读到：设为全局可读可执行
-        val local = File(context.filesDir, "rootkeep/$SCRIPT_NAME")
-        local.parentFile?.mkdirs()
-        local.writeText(script)
-        local.setReadable(true, false)
-        local.parentFile?.setExecutable(true, false)
+        // ★ 唯一一份脚本，固定落在 /data/adb/tyd/：不随 root 方案变化。
+        //   识别 Magisk / KernelSU / APatch 只用于界面展示，不再决定文件去哪。
+        if (!putFile(SCRIPT_PATH, script, "755")) {
+            return Result.Failed("写入 $SCRIPT_PATH 失败（root 权限不足或 /data/adb 不可写）")
+        }
+        // 探针顺手也铺到同一目录，自检直接跑它
+        val probeText = runCatching {
+            context.assets.open(ASSET_PROBE).bufferedReader().use { it.readText() }
+        }.getOrDefault("")
+        if (probeText.isNotEmpty() && putFile(PROBE_PATH, probeText, "755")) {
+            probeDeployedSha = probeText.hashCode()
+        }
 
-        val marker = markerFile(context)
-        val alreadyRunning = findPid().isNotEmpty()
+        // 老版本把 state / 日志放在 /data/adb 根下，且脚本直接铺在 service.d 里。
+        // 迁移一次：否则升级后「上次是停止状态」会被重置成默认开，
+        // 用户会觉得「我刚关的怎么又开了」。
+        runRootOutput(
+            "mkdir -p '$BASE_DIR' && " +
+                "if [ -f /data/adb/tyd_keepalive.state ] && [ ! -f '$STATE_PATH' ]; then " +
+                "mv /data/adb/tyd_keepalive.state '$STATE_PATH'; fi && " +
+                "if [ -f /data/adb/tyd_keepalive.log ] && [ ! -f '$LOG_PATH' ]; then " +
+                "mv /data/adb/tyd_keepalive.log '$LOG_PATH'; fi",
+        )
 
-        // 铺进各框架的 service.d（存在则写，不存在就跳过，不报错）
-        val dirs = serviceDirs()
-        // 先清掉上一版「四个目录全写」留下的副本，避免多个守护进程互相抢。
-        // 但没有框架目录时不能清：那会把用户手工放进 service.d 的脚本一起删掉，
-        // 一次「安装」变成一次「卸载」。
-        if (dirs.isNotEmpty()) cleanupStrayDirs(dirs)
+        // 所有可能的开机目录都放一个转发脚本：谁执行都能跑到真身，重复执行也无害
+        val shim = shimText()
         val installedDirs = mutableListOf<String>()
-        for (dir in dirs) {
-            val target = File(dir, SCRIPT_NAME)
-            if (runRoot("mkdir -p '$dir' && cp '${local.absolutePath}' '$target' && chmod 755 '$target'")) {
-                installedDirs += dir
-            }
+        for (dir in launchDirs()) {
+            // 目录已存在才写：mkdir -p 会凭空造出 /data/adb/ap/ 这类假目录
+            val exists = runRootOutput("test -d '$dir' && echo yes").contains("yes")
+            if (!exists) continue
+            if (putFile("$dir/$SHIM_NAME", shim, "755")) installedDirs += dir
         }
 
-        if (alreadyRunning) {
-            // 已在运行：先停掉旧进程再重启一次。
-            // 脚本逻辑会随版本变化（例如「用户主动停止后不拉起」的判断），
-            // 只更新磁盘上的副本不动进程，用户要等到下次重启才生效——体验上等于没修。
-            for (oldPid in findPids()) runRoot("kill $oldPid")
-            // 等它们真的退出再起新的，否则新旧脚本会同时 kick
-            for (i in 0 until 15) {
-                if (findPids().isEmpty()) break
-                Thread.sleep(200)
-            }
+        // 清掉老版本留下的、内容不同的同名脚本（以前是真身直接铺在 service.d 里，
+        // 那份现在会被转发脚本覆盖；其它框架目录里的旧副本也要清，避免两份互抢）
+        cleanupOldCopies(keep = installedDirs)
+
+        // 已在跑就先停，保证新脚本立即生效（否则要等下次重启）
+        for (oldPid in findPids()) runRoot("kill $oldPid")
+        for (i in 0 until 15) {
+            if (findPids().isEmpty()) break
+            Thread.sleep(200)
         }
 
-        // 立即拉起：setsid 脱离当前进程组，父进程死了不影响它
-        val startCmd = "setsid sh '${local.absolutePath}' >/dev/null 2>&1 & echo started"
-        val startOk = runRoot(startCmd)
-
-        // 等一小会儿看进程是否真的起来了（am/sh 启动有延迟）
+        val startOk = runRoot("setsid sh '$SCRIPT_PATH' >/dev/null 2>&1 & echo started")
         var pid = ""
-        // 轮询等进程起来：拿到 PID 就立刻结束等待（return@repeat 只会跳过本轮，不能提前退出）
-        for (i in 0 until 10) {
+        for (i in 0 until 12) {
             pid = findPid()
             if (pid.isNotEmpty()) break
             Thread.sleep(200)
@@ -178,13 +205,35 @@ object RootKeeper {
 
         return when {
             pid.isNotEmpty() -> {
-                // 只有进程真的起来了才写「已安装」标记：
-                // 早先无条件写，导致装失败时按钮也变成「重装」，用户以为装好了
-                marker.writeText("1")
+                markerFile(context).writeText("1")
                 Result.Installed(pid, describe(installedDirs))
             }
-            startOk -> Result.Failed("脚本已写入但进程未起来，请查看 /data/adb/tyd_keepalive.log")
-            else -> Result.Failed("启动守护进程失败")
+            startOk -> Result.Failed("脚本已写入 $SCRIPT_PATH，但进程没起来；请看 $LOG_PATH")
+            else -> Result.Failed("启动守护进程失败（$SCRIPT_PATH）")
+        }
+    }
+
+    /**
+     * 开机目录里的转发脚本。
+     *
+     * 它只有两个职责：确认真身存在、确认没有已在跑的守护，然后拉起它。
+     * 这样无论 Magisk / KernelSU / APatch 哪个框架执行、执行几次，都不会起多个守护进程。
+     */
+    private fun shimText(): String = """
+        #!/system/bin/sh
+        # 天元鼎 · 开机转发（由 APP 生成，勿手改；真身在 $SCRIPT_PATH）
+        [ -f '$SCRIPT_PATH' ] || exit 0
+        # 单实例：已有守护就不重复启动
+        if pgrep -f 'tyd_keepalive.sh\$' >/dev/null 2>&1; then exit 0; fi
+        setsid sh '$SCRIPT_PATH' >/dev/null 2>&1 &
+        exit 0
+    """.trimIndent() + "\n"
+
+    /** 清掉旧版本留在各开机目录里的「真身脚本」副本（内容与新 shim 不同）。 */
+    private fun cleanupOldCopies(keep: List<String>) {
+        for (dir in launchDirs()) {
+            if (dir in keep) continue
+            runRoot("rm -f '$dir/$SHIM_NAME'")
         }
     }
 
@@ -192,13 +241,13 @@ object RootKeeper {
     fun uninstall(context: Context): UninstallResult {
         if (!hasRoot()) return UninstallResult.NoRoot("未获取到 root")
         for (pid in findPids()) runRoot("kill $pid")
-        for (dir in serviceDirs()) {
-            runRoot("rm -f '$dir/$SCRIPT_NAME'")
-        }
-        // 顺带清掉可能残留在其它框架目录里的副本
-        cleanupStrayDirs(emptyList())
+        // 转发脚本全清
+        for (dir in launchDirs()) runRoot("rm -f '$dir/$SHIM_NAME'")
+        // 真身与配套文件一起清
+        runRoot("rm -rf '$BASE_DIR'")
         File(context.filesDir, "rootkeep/$SCRIPT_NAME").delete()
         markerFile(context).delete()
+        probeDeployedSha = 0
         return UninstallResult.Done
     }
 
@@ -295,14 +344,40 @@ object RootKeeper {
         // 之前这里是 7 次独立 su：守护页每 3 秒轮询一轮，等于每秒 2 个 su 进程，
         // 锁屏时授权排队会直接卡住界面，电量也顶不住。
         val script = ensureLocalScript(context)
-        val raw = runRootOutput("sh '${script.absolutePath}' " +
-            "'${ensureProbeScript(context).absolutePath}' 2>/dev/null")
+        // ★ 参数顺序：跑的是**探针脚本**，第一个参数才是守护脚本路径。
+        //   写反的后果是探针根本没被执行，输出恒为空 ——
+        //   界面表现就是「Root 方案未知 / 守护进程未运行 / 探活不可用 / 开机目录未铺设」全红，
+        //   而实际上守护进程跑得好好的（安装成功的 Toast 里 PID 都有）。
+        val raw = runRootOutput(
+            "sh '${ensureProbeScript(context).absolutePath}' '${script.absolutePath}' 2>/dev/null",
+        )
         val fields = raw.lineSequence()
             .mapNotNull { line ->
                 val i = line.indexOf('=')
                 if (i <= 0) null else line.substring(0, i).trim() to line.substring(i + 1).trim()
             }
             .toMap()
+
+        // 探针完全没输出（脚本读不到 / su 被拒 / 输出被截断）：不要直接把界面刷成全红。
+        // 那会让「守护明明在跑」看起来像彻底失效，再排障就完全找错方向。
+        // 退一步用最原始的一跳 pgrep 确认进程，其余项留空让界面显示「未知」。
+        if (fields.isEmpty()) {
+            val pidFallback = findPid()
+            return Verify(
+                processAlive = pidFallback.isNotEmpty(),
+                pid = pidFallback,
+                probeWorks = false,
+                probeOutput = "",
+                registeredDirs = emptyList(),
+                rootFlavor = "未知",
+                logTail = readLog(context).take(400),
+                desiredRunning = readState(),
+                suAvailable = true,
+                scriptVersion = "",
+                bundledVersion = bundledScriptVersion(context),
+                probeFailed = true,
+            )
+        }
 
         val pid = fields["PID"].orEmpty()
         val flavorRaw = fields["FLAVOR"].orEmpty()
@@ -312,6 +387,8 @@ object RootKeeper {
             .split(',')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
+            // 探针只报目录名（如 service.d），界面展示需要完整路径语义，
+            // 但短名更好读；这里保持短名，与之前的展示一致
 
         // 探活成功的判据：脚本输出的是通道名（含 curl / busybox / toybox / proc / tcp），
         // 只有明确 FAIL 或空才算不可用。
@@ -348,19 +425,58 @@ object RootKeeper {
         .replace("SVC=\"dev.tyd.app/", "SVC=\"${context.packageName}/")
         .replace("FLAG_DIR=/data/user/0/dev.tyd.app/files", "FLAG_DIR=${context.filesDir.absolutePath}")
 
-    /** 确保探针脚本也落在私有目录（su 才读得到）。 */
+    /**
+     * 准备探针脚本，返回 su 侧实际该执行的那个路径：固定 `/data/adb/tyd/probe.sh`。
+     *
+     * app 私有目录（/data/user/0/<pkg>/files）在部分 root 域读不到，
+     * 所以只要拿得到 root 就统一部署到 /data/adb/tyd —— 那里任何 su 域都能读。
+     */
     private fun ensureProbeScript(context: Context): File {
         val local = File(context.filesDir, "rootkeep/$PROBE_SCRIPT_NAME")
-        if (local.exists() && local.length() > 0) return local
+        val text = runCatching {
+            context.assets.open(ASSET_PROBE).bufferedReader().use { it.readText() }
+        }.getOrDefault("")
+        if (text.isEmpty()) return local
+
         runCatching {
-            local.parentFile?.mkdirs()
-            context.assets.open(PROBE_SCRIPT_NAME).bufferedReader().use { r ->
-                local.writeText(r.readText())
+            if (!local.exists() || local.readText() != text) {
+                local.parentFile?.mkdirs()
+                local.writeText(text)
+                local.setReadable(true, false)
             }
-            local.setReadable(true, false)
         }
-        return local
+
+        // 内容指纹没变就不重复写；失败后退避 60 秒再试（verify 每 3 秒一轮）
+        if (probeDeployedSha != text.hashCode() &&
+            System.currentTimeMillis() - probeDeployFailedAt > 60_000L
+        ) {
+            val ok = runCatching { putFile(PROBE_PATH, text, "755") }.getOrDefault(false)
+            probeDeployedSha = if (ok) text.hashCode() else 0
+            probeDeployFailedAt = if (ok) 0L else System.currentTimeMillis()
+        }
+        return if (probeDeployedSha != 0) File(PROBE_PATH) else local
     }
+
+    /**
+     * 把一段文本以 root 身份写到指定路径。
+     *
+     * 用 here-doc 而不是 `echo '...'`：脚本里含单引号、反引号、`$` 时，
+     * 拼进 echo 会被 su 的 shell 二次解析（历史问题：su 下手动跑正常、App 里拿到空文件）。
+     */
+    private fun putFile(path: String, text: String, mode: String): Boolean =
+        runRoot(
+            "mkdir -p '${path.substringBeforeLast('/')}' && " +
+                "cat > '$path' <<'TYD_END_OF_FILE'\n$text\nTYD_END_OF_FILE\n" +
+                "chmod $mode '$path'",
+        )
+
+    /** 已部署到 /data/adb 的探针内容指纹；0 表示尚未部署。 */
+    @Volatile
+    private var probeDeployedSha = 0
+
+    /** 上次部署失败的时刻（毫秒），用于退避重试。 */
+    @Volatile
+    private var probeDeployFailedAt = 0L
 
     // 探活与脚本版本读取已并入 verify() 的单次 su 调用（assets/rootkeep_probe.sh），
     // 不再需要独立的 probeCommand / readScriptVersion。
@@ -433,49 +549,35 @@ object RootKeeper {
      * 判据用「框架自己的标志文件」，而不是「目录是否存在」——
      * 因为空目录可能是我们上一次 `mkdir -p` 留下的。
      */
-    private fun serviceDirs(): List<String> {
-        val out = runRootOutput(
-            "if [ -f /data/adb/magisk/magisk ]; then echo magisk; " +
-                "elif [ -d /data/adb/ksu/bin ]; then echo ksu; " +
-                "elif [ -d /data/adb/ap/bin ]; then echo apatch; " +
-                "else echo none; fi"
-        ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
-        return when (out) {
-            // Magisk：两个阶段都受支持，用 service.d（晚启动，系统服务已就绪）
-            "magisk" -> listOf("/data/adb/service.d")
-            // KernelSU / Sukisu：官方约定就是 ksu/service.d
-            "ksu" -> listOf("/data/adb/ksu/service.d")
-            // APatch 执行的是 Magisk 兼容目录 /data/adb/service.d，
-            // 不是 /data/adb/ap/service.d（那个目录只放 APatch 自己的二进制）。
-            // 早先写成 ap/service.d 时，脚本倒是铺进去了，但开机根本没人执行它。
-            "apatch" -> listOf("/data/adb/service.d")
-            else -> emptyList()
-        }
-    }
+    /**
+     * 需要放「开机转发脚本」的目录：**全部候选都放，不再区分 root 方案**。
+     *
+     * 只有一个是真的会被执行的，但多放几个的代价是几个 3 行的文件，
+     * 换来的是「任何方案都能开机自启」——比识别错一次就整条链路失效划算得多。
+     * 目录不存在就不建（`mkdir -p` 会凭空造出 /data/adb/ap/ 这种假目录，
+     * 之后识别 root 方案时反而会误判）。
+     *
+     * 转发脚本自身做了单实例判断，即使多个目录都被执行也不会起多个守护。
+     */
+    private fun launchDirs(): List<String> = listOf(
+        "/data/adb/service.d",          // Magisk / APatch（Magisk 兼容目录）
+        "/data/adb/ksu/service.d",      // KernelSU / Sukisu
+        "/data/adb/ap/service.d",       // 部分 APatch 版本
+        "/data/adb/post-fs-data.d",     // Magisk 早期阶段（不作为主启动，但保留兜底）
+    )
 
     /** 当前 Root 方案的展示名，用于界面提示。 */
     fun rootFlavor(): String {
+        // 只在「方案指纹」目录都被读不到时才回退到「纯 su」；
+        // 早先只看 /data/adb/ap/bin，APatch 各版本布局不同就被误判成「纯 su」。
         val out = runRootOutput(
-            "if [ -f /data/adb/magisk/magisk ]; then echo Magisk; " +
-                "elif [ -d /data/adb/ksu/bin ]; then echo KernelSU/Sukisu; " +
-                "elif [ -d /data/adb/ap/bin ]; then echo APatch; " +
+            "if [ -f /data/adb/apd ] || [ -d /data/adb/ap ]; then echo APatch; " +
+                "elif [ -d /data/adb/ksu ]; then echo KernelSU/Sukisu; " +
+                "elif [ -d /data/adb/magisk ]; then echo Magisk; " +
+                "elif [ -d /data/adb/modules ]; then echo Magisk 系; " +
                 "else echo 纯 su; fi"
         ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
         return out.ifEmpty { "未知" }
-    }
-
-    /** 清理上一版铺错位置的脚本（四个目录全写那版留下的）。 */
-    private fun cleanupStrayDirs(keep: List<String>) {
-        val all = listOf(
-            "/data/adb/service.d",
-            "/data/adb/ksu/service.d",
-            "/data/adb/ap/service.d",
-            "/data/adb/post-fs-data.d",
-        )
-        for (dir in all) {
-            if (dir in keep) continue
-            runRoot("rm -f '$dir/$SCRIPT_NAME'")
-        }
     }
 
     /** 探测 root 是否可用且已授权（超时短，失败要快）。 */
@@ -548,8 +650,10 @@ object RootKeeper {
     private fun findPid(): String = findPids().firstOrNull().orEmpty()
 
     private fun describe(dirs: List<String>): String = when {
-        dirs.isEmpty() -> "守护进程已启动（当前环境无框架开机目录，重启后需重新打开应用）"
-        else -> "守护进程已启动，并已登记开机自启：${dirs.joinToString("、") { it.substringAfterLast('/') }}"
+        dirs.isEmpty() ->
+            "守护进程已启动，脚本固定在 $SCRIPT_PATH（当前系统没有可用的开机目录，重启后需重新打开应用）"
+        else ->
+            "守护进程已启动，脚本固定在 $SCRIPT_PATH；开机目录：${dirs.joinToString("、") { it.substringAfterLast('/') }}"
     }
 
     /** 以 root 执行命令，返回退出码是否为 0。 */

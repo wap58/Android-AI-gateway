@@ -28,14 +28,14 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.3"
+VER="2026-10-22.4"
 PORT=8877
 INTERVAL=5
 BOOT_WAIT=20
-LOG=/data/adb/tyd_keepalive.log
+LOG=/data/adb/tyd/keepalive.log
 MAXLOG=256000
 
-STATE=/data/adb/tyd_keepalive.state
+STATE=/data/adb/tyd/state
 FLAG_DIR=/data/user/0/dev.tyd.app/files
 FLAG="$FLAG_DIR/gateway_on.flag"
 
@@ -296,6 +296,8 @@ if [ "$1" = "probe" ]; then
 fi
 
 # ---------------------------------------------------------- 主循环
+mkdir -p /data/adb/tyd 2>/dev/null
+
 log "=== 守护启动 v$VER (pid $$) 状态=$( [ -f "$STATE" ] && cat "$STATE" || echo 未记录 ) 端口=$PORT ==="
 wait_boot
 # 启动时把探活可用通道记一行，排障最有用的一条信息
