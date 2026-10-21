@@ -77,7 +77,11 @@ private const val PROJECT_URL = "https://github.com/wap58/Android-AI-gateway"
 
 /** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
 private const val RELEASES_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases/latest"
-private const val RELEASES_LIST_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases?per_page=10"
+/**
+ * 测试版通道：CI 的固定 tag `ci-latest`（每次 CI 构建覆盖同一份资产）。
+ * 不遍历 Release 列表、不看 prerelease 标记 —— 一个地址永远指向最新的 CI 包。
+ */
+private const val CI_RELEASE_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases/tags/ci-latest"
 
 /** GitHub API 要求请求带 User-Agent。 */
 private const val UPDATE_UA = "ai-gateway-android"
@@ -155,8 +159,8 @@ enum class UpdateChannel(val label: String, val detail: String) {
     /** 公开版：只跟随正式 Release（非预发布）。 */
     Release("公开版", "从 Release 获取，稳定可日常使用"),
 
-    /** 测试版：连预发布（prerelease）一起取，更新更勤，可能带问题。 */
-    Beta("测试版", "跟随预发布通道，更新更频繁，问题也多"),
+    /** 测试版：直接跟随 CI 构建（每次推送都用 ci-latest 覆盖发布），更新最勤。 */
+    Beta("测试版", "跟随 CI 构建，每改一次就有一个新包，可能带问题"),
     ;
 
     companion object {
@@ -206,6 +210,8 @@ data class UpdateInfo(
     val url: String,
     val notes: String,
     val apkUrl: String = "",
+    /** 该 Release 的发布时间（毫秒）；0 表示未知。CI 通道靠它识别「同版本号但更新的构建」。 */
+    val publishedAt: Long = 0L,
 )
 
 sealed interface ModelTestStatus {
@@ -1834,7 +1840,12 @@ class AppViewModel(
                         }
                         return@fold
                     }
-                    if (isNewer(info.version, installedVersionName())) {
+                    // 测试通道同版本号会反复重建（CI 每次都是新包），
+                    // 仅比版本号会永远显示「已是最新」。补一条：发布晚于本机安装时间也算有更新。
+                    val rebuilt = _state.value.updateChannel == UpdateChannel.Beta &&
+                        !isNewer(info.version, installedVersionName()) &&
+                        info.publishedAt > installedUpdateTime() + 60_000L
+                    if (isNewer(info.version, installedVersionName()) || rebuilt) {
                         _state.value = _state.value.copy(updateInfo = info)
                     } else if (manual) {
                         _state.value = _state.value.copy(notice = "已是最新版本（${installedVersionName()}）")
@@ -1853,13 +1864,17 @@ class AppViewModel(
     /**
      * 直连 GitHub 取最新版本。
      *
-     * 两个通道用不同接口：
-     * - 公开版：`/releases/latest`（GitHub 保证返回的是最新**非预发布**版本）
-     * - 测试版：`/releases?per_page=10` 取列表第一条（含 prerelease），
-     *   因为 `/latest` 永远跳过预发布，用它做测试通道等于永远收不到测试版。
+     * 两个通道用不同地址：
+     * - 公开版：`/releases/latest` —— GitHub 保证返回最新**正式** Release
+     * - 测试版：`/releases/tags/ci-latest` —— CI 每次构建覆盖发布的固定 tag
+     *
+     * 测试版刻意不遍历 Release 列表：CI 天天出包，逐个建 Release 只会让列表变垃圾堆，
+     * 还要在 App 端按版本号挑最大（发布顺序 ≠ 版本顺序，容易挑错）。
+     * 固定 tag + 覆盖资产 = 一个永不变的地址，指向最新 CI 包。
      */
     private fun fetchLatestRelease(): UpdateInfo {
-        val api = if (_state.value.updateChannel == UpdateChannel.Beta) RELEASES_LIST_API else RELEASES_API
+        val beta = _state.value.updateChannel == UpdateChannel.Beta
+        val api = if (beta) CI_RELEASE_API else RELEASES_API
         val conn = (URL(api).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 10_000
@@ -1869,39 +1884,40 @@ class AppViewModel(
         }
         try {
             val status = conn.responseCode
-            if (status == 404) throw IllegalStateException("暂无发布版本")
+            if (status == 404) {
+                throw IllegalStateException(if (beta) "测试通道暂无构建包" else "暂无发布版本")
+            }
             if (status !in 200..299) throw IllegalStateException("HTTP $status")
             val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val parsed = JsonParser.parseString(body)
-            // 列表接口返回数组，latest 返回对象：统一成对象再取字段。
-            // 列表里取「版本号最大」的那条，而不是第一条 —— 发布顺序不一定等于版本顺序
-            // （补发旧 tag、预发布与正式版交替），取第一条可能拿到比当前还旧的版本。
-            val obj = if (parsed.isJsonArray) {
-                parsed.asJsonArray
-                    .mapNotNull { runCatching { it.asJsonObject }.getOrNull() }
-                    .filter { it.get("tag_name")?.asString?.trim().orEmpty().isNotEmpty() }
-                    .maxByOrNull {
-                        it.get("tag_name")?.asString.orEmpty()
-                            .trim().removePrefix("v")
-                            .split('.', '-')
-                            .map { p -> p.toIntOrNull() ?: 0 }
-                            .let { v -> v.fold(0L) { acc, x -> acc * 1000L + x } }
-                    }
-                    ?: return UpdateInfo(version = "", url = "$PROJECT_URL/releases", notes = "")
+            val obj = JsonParser.parseString(body).asJsonObject
+            // ci-latest 的 tag 恒为 "ci-latest"，真正的版本号在 Release 名字里（v0.1.1.44-beta）
+            val tag = obj.get("tag_name")?.asString?.trim().orEmpty()
+            val nameVersion = obj.get("name")?.asString.orEmpty()
+                .trim().removePrefix("v").removePrefix("V")
+            val version = if (beta) {
+                nameVersion.ifBlank { tag.removePrefix("v") }
             } else {
-                parsed.asJsonObject
+                tag.removePrefix("v")
             }
-            val version = obj.get("tag_name")?.asString?.trim().orEmpty().removePrefix("v")
             if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
             val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }
             val notes = obj.get("body")?.asString.orEmpty().trim()
+            val publishedAt = runCatching {
+                java.time.Instant.parse(obj.get("published_at")?.asString.orEmpty()).toEpochMilli()
+            }.getOrDefault(0L)
             // 找 APK 资产直链：有了它才能应用内下载，否则只能跳浏览器
             val apkUrl = obj.getAsJsonArray("assets")
                 ?.mapNotNull { it.asJsonObject }
                 ?.firstOrNull { it.get("name")?.asString?.endsWith(".apk", ignoreCase = true) == true }
                 ?.get("browser_download_url")?.asString
                 .orEmpty()
-            return UpdateInfo(version = version, url = url, notes = notes, apkUrl = apkUrl)
+            return UpdateInfo(
+                version = version,
+                url = url,
+                notes = notes,
+                apkUrl = apkUrl,
+                publishedAt = publishedAt,
+            )
         } finally {
             conn.disconnect()
         }
@@ -1918,6 +1934,11 @@ class AppViewModel(
         }
         return false
     }
+
+    /** 本机 APK 的安装/更新时间（毫秒）；读不到返回 0。 */
+    private fun installedUpdateTime(): Long = runCatching {
+        app.packageManager.getPackageInfo(app.packageName, 0).lastUpdateTime
+    }.getOrDefault(0L)
 
     private fun installedVersionName(): String = runCatching {
         app.packageManager.getPackageInfo(app.packageName, 0).versionName.orEmpty()

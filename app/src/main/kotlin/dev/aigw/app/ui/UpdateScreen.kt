@@ -57,7 +57,11 @@ fun UpdateScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit)
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             ActionRow(
                 title = "检查更新",
-                subtitle = "从 GitHub Releases 获取${state.updateChannel.label}最新版本",
+                subtitle = if (state.updateChannel == UpdateChannel.Beta) {
+                    "获取最新 CI 构建包（覆盖在 ci-latest 上）"
+                } else {
+                    "从 GitHub Releases 获取最新正式版"
+                },
                 meta = if (state.updateChecking) "检查中…" else "",
                 enabled = !state.updateChecking,
             ) { viewModel.checkUpdate() }
@@ -80,8 +84,8 @@ fun UpdateScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit)
                 onSelect = { viewModel.setUpdateChannel(it) },
             )
             Text(
-                text = "说明：测试版来自预发布（prerelease），可能包含未验证的改动，出问题请切回公开版。" +
-                    "切换通道后会立即重新检查一次。",
+                text = "说明：测试版直接取 CI 构建产物（每次代码改动都会重新打包），" +
+                    "可能包含未验证的改动，出问题请切回公开版。切换通道后会立即重新检查一次。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

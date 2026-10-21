@@ -1,12 +1,19 @@
 name: Build Release APK
 
-# 仅构建、不发版：手动触发，跑测试 + 打 release 包，产物以 artifact 形式保留。
-# 用于实机测试 release 包；需要正式发版时用 android-release.yml（会创建 Release 与 tag）。
+# CI 测试版通道：手动触发 → 跑自检/单测 → 打 release 包 →
+#   ① 上传 artifact（留档 14 天，可手动下载）
+#   ② 覆盖发布到固定 tag `ci-latest` 的 Release（App「测试版」通道读的就是它）
+# 正式版仍走 android-release.yml（创建 vX.Y.Z Release）。
+#
+# 为什么不给每个测试版单独发预发行 Release：
+# 测试版天天变，逐个建 tag/Release 只会让 Release 列表变成垃圾堆，
+# 而且 App 端还得在一堆版本里挑「最高版本」。
+# 固定 tag + 覆盖资产 = 永远只有一个地址，App 记一个常量就行。
 on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -64,9 +71,31 @@ jobs:
       - name: 重命名产物
         run: cp app/build/outputs/apk/release/app-release.apk "tianyuanding-${{ steps.version.outputs.version }}.apk"
 
-      - name: 上传 APK（artifact，不创建 Release）
+      - name: 上传 APK（artifact，留档可手动下载）
         uses: actions/upload-artifact@v4
         with:
           name: tianyuanding-${{ steps.version.outputs.version }}
           path: tianyuanding-${{ steps.version.outputs.version }}.apk
           retention-days: 14
+
+      - name: 固定文件名（给测试通道用稳定直链）
+        run: cp "tianyuanding-${{ steps.version.outputs.version }}.apk" tianyuanding-ci.apk
+
+      - name: 更新测试通道（覆盖发布到 ci-latest）
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-latest
+          name: v${{ steps.version.outputs.version }}
+          # 必须标 prerelease：GitHub 的 /releases/latest 会自动跳过预发布，
+          # 公开版用户才不会收到 CI 包。这不是"预发行版本管理"，只是让这条通道对公开版不可见。
+          prerelease: true
+          # 不参与"最新版本"评选，避免和正式版的 latest 抢位置
+          make_latest: 'false'
+          body: |
+            CI 测试版 · v${{ steps.version.outputs.version }}
+
+            构建自 `${{ github.sha }}`（main 分支）。
+            运行：[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+            > 该包由 CI 自动产出，未经过人工验证，可能带问题。要稳定请切回「公开版」通道。
+          files: tianyuanding-ci.apk

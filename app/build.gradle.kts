@@ -41,8 +41,8 @@ android {
         // 形如 0.0.9.26 —— 这样“只升 code 不升主版本”时，
         // 更新检测（只比 versionName）依然能识别出「有新版本」。
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
-        versionCode = 44
-        versionName = "0.1.1.44-beta"
+        versionCode = 45
+        versionName = "0.1.1.45-beta"
     }
 
     buildFeatures {
