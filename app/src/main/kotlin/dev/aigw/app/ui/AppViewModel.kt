@@ -994,6 +994,10 @@ class AppViewModel(
         }
     }
 
+    /** 自检是否正在进行（防止 3 秒轮询叠出多轮）。 */
+    @Volatile
+    private var rootKeeperChecking = false
+
     /** 只刷新「网关是否在运行」这一个字段（磁贴/守护可能在后台改了它）。 */
     fun refreshRunning() {
         val running = runCatching { engine.isRunning() }.getOrDefault(_state.value.running)
@@ -1009,9 +1013,19 @@ class AppViewModel(
      * 用户去 Root 管理器授权完回到本页时传 true，否则要等半分钟卡片才出现。
      */
     fun refreshRootKeeperState(forceSuCheck: Boolean = false) {
+        // ★ 防堆积：页面每 3 秒调一次，而一次自检要起 su、跑探活，
+        //   网关没起来时能拖到十几秒。不加保护就会同时挂好几轮，
+        //   表现是界面越用越卡、su 进程越来越多。
+        if (rootKeeperChecking) return
+        rootKeeperChecking = true
         viewModelScope.launch {
-            val v = withContext(Dispatchers.IO) {
-                runCatching { dev.aigw.app.service.RootKeeper.verify(app, forceSuCheck) }.getOrNull()
+            val v = try {
+                withContext(Dispatchers.IO) {
+                    runCatching { dev.aigw.app.service.RootKeeper.verify(app, forceSuCheck) }
+                        .getOrNull()
+                }
+            } finally {
+                rootKeeperChecking = false
             }
             // 查询失败（su 超时 / 被拒）时保留上一次的结果：
             // 置 null 会让「Root 卡片」整块消失，用户会以为 root 权限丢了，
@@ -1020,7 +1034,6 @@ class AppViewModel(
         }
     }
 
-    /** 读完整守护日志（「更多」弹窗用，同步返回，调用方放 IO 或点击回调里）。 */
     /**
      * 读完整守护日志。
      *

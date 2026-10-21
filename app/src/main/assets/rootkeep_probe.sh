@@ -62,8 +62,17 @@ echo "VER=$(grep -m1 '^VER=' /data/adb/tyd/tyd_keepalive.sh 2>/dev/null | sed 's
 if [ -f /data/adb/tyd/tyd_keepalive.sh ]; then
   SCRIPT=/data/adb/tyd/tyd_keepalive.sh
 fi
+# 探活本身可能耗十几秒（curl 每条预算 3 秒，网关没起来时逐级试错），
+# 而本探针会被 App 每 3 秒调用一次。嵌套调用超时会拖住整个自检，
+# 这里用 toybox timeout（有就用）给探活兜个上限，避免拖死轮询。
 if [ -n "$SCRIPT" ] && [ -f "$SCRIPT" ]; then
-  echo "PROBE=$(sh "$SCRIPT" probe 2>/dev/null)"
+  if [ -x /system/bin/timeout ]; then
+    echo "PROBE=$(/system/bin/timeout 12 sh "$SCRIPT" probe 2>/dev/null)"
+  elif [ -x /system/bin/toybox ]; then
+    echo "PROBE=$(/system/bin/toybox timeout 12 sh "$SCRIPT" probe 2>/dev/null)"
+  else
+    echo "PROBE=$(sh "$SCRIPT" probe 2>/dev/null)"
+  fi
 else
   echo "PROBE=FAIL"
 fi

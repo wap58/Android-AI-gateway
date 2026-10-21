@@ -203,7 +203,9 @@ object RootKeeper {
             Thread.sleep(200)
         }
 
-        runRoot("rm -rf '$BASE_DIR/daemon.lock'")
+        // 清掉上一次卸载留下的 disabled 标记与残缺锁：
+        // 不清的话新守护一进主循环就自我退出，用户看到的是「装不上/装了立刻又没了」。
+        runRoot("rm -rf '$BASE_DIR/daemon.lock' '$BASE_DIR/disabled'")
         val startOk = runRoot("setsid sh '$SCRIPT_PATH' >/dev/null 2>&1 & echo started")
         var pid = ""
         for (i in 0 until 12) {
@@ -253,18 +255,11 @@ object RootKeeper {
     fun uninstall(context: Context): UninstallResult {
         if (!hasRoot()) return UninstallResult.NoRoot("未获取到 root")
 
-        // ★ 顺序很重要：必须先确认进程死透，再删文件。
-        //   之前是先 kill 紧接着 rm -rf，可守护脚本在跑的时候会 `mkdir -p /data/adb/tyd`，
-        //   残余进程在删除之后又把这个目录建了回来 —— 用户看到的就是
-        //   「卸载了但 /data/adb/tyd 和脚本还在」。
-        // ★ 卸载顺序：先让守护自己退，再删文件。
-        //
-        //   只靠 kill 不可靠：某些 su / SELinux 组合下信号会被静默丢弃，
-        //   进程继续跑 → 下个循环把刚删的目录 mkdir 回来 → 用户得反复点卸载。
-        //   所以先写 disabled 标记（守护每 5 秒自查一次，见到就 exit），
-        //   标记写不进去（账号没 root 权限 / 目录不存在）再退回 kill。
-        // 守护每 2 秒检查一次这个标记（它把 60 秒的探活间隔切成了 2 秒一段），
-        // 所以这里等 8 秒已经很宽裕。
+        // ★ 卸载顺序：先让守护自己退，再删文件（先 kill 后 rm 会因为残余进程
+        //   `mkdir -p /data/adb/tyd` 把刚删的目录又建回来）。
+        //   只靠 kill 不可靠——某些 su / SELinux 组合下信号会被静默丢弃，
+        //   所以写 disabled 标记（守护把 60 秒间隔切成 2 秒一段，每段都检查），
+        //   等 8 秒足够；标记写不进去时再退回多轮 kill → kill -9。
         runRoot("mkdir -p '$BASE_DIR' && echo 1 > '$BASE_DIR/disabled'")
         var gone = waitGone(8_000)
         if (!gone) {
