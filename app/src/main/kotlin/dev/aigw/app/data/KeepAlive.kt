@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
+import dev.aigw.app.AiGatewayApp
 
 /** 保活相关的系统状态快照。 */
 data class KeepAliveStatus(
@@ -33,6 +34,21 @@ object KeepAlivePrefs {
     private const val KEY_OVERLAY = "keepalive/overlay"
     private const val KEY_AUTOSTART = "keepalive/autostart"
     private const val KEY_HIDE_RECENTS = "keepalive/hide_recents"
+
+    /**
+     * 最后一次「用户期望的网关状态」：运行中=1，已停止=0。
+     * 每次显式启停都落盘；进程被意外杀死时来不及改写，保留的仍是 1，
+     * 这样开机（或保活拉起）后能据此恢复到上次的状态。
+     */
+    private const val KEY_DESIRED_RUNNING = "keepalive/desired_running"
+
+    /** 上次的网关状态；从未记录过（全新安装）返回 false。 */
+    fun desiredRunning(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_DESIRED_RUNNING) == "1"
+
+    fun setDesiredRunning(store: dev.aigw.core.store.KeyValueStore, running: Boolean) {
+        store.write(KEY_DESIRED_RUNNING, if (running) "1" else "0")
+    }
 
     fun overlayEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_OVERLAY) == "1"
@@ -139,5 +155,52 @@ object KeepAlive {
             "魅族：手机管家 → 权限管理 → 后台管理 → 允许后台运行"
         else ->
             "在系统设置的电池 / 应用管理里，把本应用的省电策略改为「无限制」并允许后台运行"
+    }
+}
+
+/**
+ * 「用户期望的网关状态」的唯一写入口。
+ *
+ * 同时落到两处：
+ * 1. 加密存储（App 内读，用于开机自启判断 / 界面回显）
+ * 2. 应用私有目录下的标记文件（Root 守护脚本是纯 shell，读不了加密存储，
+ *    只能看文件在不在 —— 没有这个标记，用户主动关网关后 20 秒内就会被守护重新拉起来）
+ */
+object GatewayIntent {
+
+    private const val FLAG_NAME = "gateway_on.flag"
+
+    private val storeWriter: java.util.concurrent.ExecutorService =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "gateway-intent").apply { isDaemon = true }
+        }
+
+    fun flagFile(context: Context) = java.io.File(context.filesDir, FLAG_NAME)
+
+    /**
+     * 标记文件同步写（几字节，快），加密存储异步写：
+     * 加密存储 commit() 是全量重加密 + fsync，几百毫秒，不能在服务启动/停止的主线程上做；
+     * 而调用方经常紧接着要读状态，所以文件那一路必须立即生效。
+     */
+    fun markRunning(context: Context, running: Boolean) {
+        val appContext = context.applicationContext
+        runCatching {
+            val f = flagFile(appContext)
+            if (running) {
+                if (!f.exists()) {
+                    f.parentFile?.mkdirs()
+                    f.writeText(System.currentTimeMillis().toString())
+                }
+            } else if (f.exists()) {
+                f.delete()
+            }
+        }
+        runCatching {
+            val app = appContext as? AiGatewayApp ?: return@runCatching
+            // 单线程串行化：连续快速开关时，后写的不能先落地
+            storeWriter.execute {
+                runCatching { KeepAlivePrefs.setDesiredRunning(app.store, running) }
+            }
+        }
     }
 }

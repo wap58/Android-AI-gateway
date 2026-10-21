@@ -13,6 +13,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.app.data.GatewayIntent
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.gatewayEngine
@@ -686,6 +687,9 @@ class AppViewModel(
                 // 引擎没起来就撤掉前台通知，避免「通知说运行中、端口没人听」
                 app.stopService(Intent(app, GatewayService::class.java))
                 _state.value = _state.value.copy(notice = "启动失败：$error")
+            } else {
+                // 记住「用户要它开着」：开机自启 / Root 守护据此恢复，而不是无条件拉起
+                withContext(Dispatchers.IO) { GatewayIntent.markRunning(app, true) }
             }
             refresh()
             requestTileUpdate()
@@ -694,6 +698,8 @@ class AppViewModel(
 
     fun stopGateway() {
         viewModelScope.launch {
+            // 先落盘「用户主动停止」：守护脚本看到标记没了才不会在 20 秒后把它拉回来
+            withContext(Dispatchers.IO) { GatewayIntent.markRunning(app, false) }
             withContext(Dispatchers.IO) { engine.stop() }
             app.stopService(Intent(app, GatewayService::class.java))
             _state.value = _state.value.copy(notice = "服务已停止")
@@ -1309,7 +1315,7 @@ class AppViewModel(
 
     /** 刷新全部供应商的额度（首页 / 任务中心入口）：有进度与结构化结果面板。 */
     fun refreshAllCredits() = runBatch("刷新额度") { onProgress ->
-        if (engine.accounts().isEmpty()) throw IllegalStateException("还没有账号，先去「供应商」页添加")
+        if (engine.accounts().isEmpty()) throw IllegalStateException("还没有账号，先去「账号」页添加")
         engine.refreshAllCredits(onProgress = onProgress).map { it.toBatchResult() }
     }
 

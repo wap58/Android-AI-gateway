@@ -134,7 +134,7 @@ class MainActivity : ComponentActivity() {
 
 private enum class Tab(val label: String, val icon: ImageVector) {
     Home("首页", Icons.Filled.Home),
-    Providers("供应商", Icons.Filled.Person),
+    Providers("账号", Icons.Filled.Person),
     Logs("记录", Icons.Filled.History),
     Me("我的", Icons.Filled.Settings),
 }

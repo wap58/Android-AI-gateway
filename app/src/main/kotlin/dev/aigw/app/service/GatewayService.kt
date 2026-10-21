@@ -34,12 +34,19 @@ class GatewayService : Service() {
         startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
         val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
         if (started) {
+            // 服务能起来就说明网关此刻应当运行：补记期望状态（Root 守护/开机自启据此恢复）
+            dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
             engine.requestLog.info("前台服务已拉起，通知已发布")
             acquireLocks()
             applyOverlay(engine)
-            // START_NOT_STICKY：进程被杀后不自重建（自重建是灰色软件检测的典型特征）。
-            // 代价：系统回收后网关不会自动恢复，用户需重新打开 App 或点磁贴。
-            return START_NOT_STICKY
+            // 恢复上次状态：用户希望网关开着（标记存在）时用 START_STICKY，
+            // 系统回收进程后由系统重建服务、网关自动恢复，无需用户再打开 App；
+            // 用户已主动停止则 START_NOT_STICKY，绝不自己冒出来。
+            return if (dev.aigw.app.data.GatewayIntent.isMarkedRunning(applicationContext)) {
+                START_STICKY
+            } else {
+                START_NOT_STICKY
+            }
         }
         // 引擎没起来：撤掉刚发的通知再退出，避免「通知说运行中、端口没人听」
         stopSelf()

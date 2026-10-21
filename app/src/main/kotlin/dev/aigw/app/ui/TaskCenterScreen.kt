@@ -64,7 +64,7 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
 
         if (state.providers.none { state.accountsOf(it.id).isNotEmpty() }) {
             SectionCard(enterIndex = 1) {
-                EmptyHint("还没有账号", "先去「供应商」页添加账号，再回来签到。")
+                EmptyHint("还没有账号", "先去「账号」页添加账号，再回来签到。")
             }
             return@PageScaffold
         }

@@ -24,6 +24,7 @@ class GatewayTileService : TileService() {
         val engine = runCatching { gatewayEngine }.getOrNull() ?: return
         val tile = qsTile ?: return
         if (engine.isRunning()) {
+            dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, false)
             engine.stop()
             applicationContext.stopService(Intent(applicationContext, GatewayService::class.java))
             engine.requestLog.info("控制中心磁贴停止了网关")
@@ -34,6 +35,7 @@ class GatewayTileService : TileService() {
                 Intent(applicationContext, GatewayService::class.java),
             )
             val ok = runCatching { engine.start() }.isSuccess
+            if (ok) dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
             if (!ok) {
                 applicationContext.stopService(Intent(applicationContext, GatewayService::class.java))
             }

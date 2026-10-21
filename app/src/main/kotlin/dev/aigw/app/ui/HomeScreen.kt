@@ -552,10 +552,10 @@ private fun TileNote(text: String) {
 
 @Composable
 private fun ProvidersTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "供应商") {
-        BigNumber(state.providers.size.toString())
+    Tile(modifier, "账号") {
+        BigNumber(state.accounts.size.toString())
         TileNote(
-            if (state.providers.isEmpty()) "暂无供应商" else state.providers.joinToString(" · ") { it.displayName },
+            if (state.providers.isEmpty()) "暂无账号" else state.providers.joinToString(" · ") { it.displayName },
         )
     }
 }

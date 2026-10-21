@@ -187,7 +187,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 Column(Modifier.weight(1f)) {
                     Text("开机自启", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
-                        text = "系统启动完成后自动把网关服务拉起来，不用每次手动打开应用。",
+                        text = "系统启动后恢复到上次的状态：上次是开着的就自动拉起网关，上次是关着的就保持关闭。",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

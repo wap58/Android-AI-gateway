@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
 import dev.aigw.app.AiGatewayApp
+import dev.aigw.app.data.GatewayIntent
 import dev.aigw.app.data.KeepAlivePrefs
 
 /**
@@ -33,6 +34,14 @@ class BootReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? AiGatewayApp ?: return
         val enabled = runCatching { KeepAlivePrefs.autoStartEnabled(app.store) }.getOrDefault(false)
         if (!enabled) return
+
+        // 恢复上次状态：上次（关机 / 崩溃 / 被清理前）网关是停止的，开机就不该把它拉起来。
+        // 只有「上次是运行中」才恢复，避免用户主动停掉后重启又自己跑起来。
+        // 加密存储（权威）与文件标记（兜底）任一存在即视为「上次是开着的」：
+        // 开机早期加密存储可能读不出（用户凭据未就绪），标记文件没有这个限制。
+        val desired = runCatching { KeepAlivePrefs.desiredRunning(app.store) }.getOrDefault(false) ||
+            GatewayIntent.isMarkedRunning(app)
+        if (!desired) return
 
         val svc = Intent(context, GatewayService::class.java)
         try {

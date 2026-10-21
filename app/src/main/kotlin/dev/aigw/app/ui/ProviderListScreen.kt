@@ -40,8 +40,8 @@ fun ProviderListScreen(
     onOpenModels: () -> Unit,
 ) {
     PageScaffold(
-        title = "供应商",
-        subtitle = "共 ${state.providers.size} 个",
+        title = "账号",
+        subtitle = "共 ${state.providers.size} 个供应商 · ${state.accounts.size} 个账号",
         actions = {
             // 模型入口：底栏已不设独立 tab，改从这里进（图标方框）
             SquareIconButton(

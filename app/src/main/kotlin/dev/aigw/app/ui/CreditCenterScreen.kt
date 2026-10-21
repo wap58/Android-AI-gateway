@@ -31,7 +31,7 @@ fun CreditCenterScreen(state: AppUiState, onOpen: (String) -> Unit, onBack: () -
         val providers = state.providers.filter { state.accountsOf(it.id).isNotEmpty() }
         if (providers.isEmpty()) {
             SectionCard(enterIndex = 0) {
-                EmptyHint("还没有账号", "先去「供应商」页添加账号。")
+                EmptyHint("还没有账号", "先去「账号」页添加账号。")
             }
             return@PageScaffold
         }
@@ -100,7 +100,7 @@ fun ProviderCreditsScreen(
     ) {
         if (accounts.isEmpty()) {
             SectionCard(enterIndex = 1) {
-                EmptyHint("还没有账号", "先去该供应商页添加账号。")
+                EmptyHint("还没有账号", "先去该供应商的账号页添加账号。")
             }
             return@PageScaffold
         }

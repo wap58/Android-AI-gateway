@@ -113,8 +113,17 @@ object RootKeeper {
         }
 
         if (alreadyRunning) {
-            // 已在运行：只更新磁盘上的脚本，下次被杀重启时用新版
-            return Result.AlreadyInstalled
+            // 已在运行：先停掉旧进程再重启一次。
+            // 脚本逻辑会随版本变化（例如「用户主动停止后不拉起」的判断），
+            // 只更新磁盘上的副本不动进程，用户要等到下次重启才生效——体验上等于没修。
+            val oldPid = findPid()
+            if (oldPid.isNotEmpty()) {
+                runRoot("kill $oldPid")
+                for (i in 0 until 15) {
+                    if (findPid().isEmpty()) break
+                    Thread.sleep(200)
+                }
+            }
         }
 
         // 立即拉起：setsid 脱离当前进程组，父进程死了不影响它
