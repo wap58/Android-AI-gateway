@@ -325,8 +325,10 @@ fun StatCell(
 fun ChoiceChip(
     text: String,
     selected: Boolean,
-    onClick: () -> Unit,
+    // onClick 必须放在最后：大量调用点用的是尾随 lambda 形式
+    // `ChoiceChip("保存", selected = false) { ... }`，一旦不是最后一个参数就全部编译失败。
     modifier: Modifier = Modifier,
+    onClick: () -> Unit,
 ) {
     val container by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface,
