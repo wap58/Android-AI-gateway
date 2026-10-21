@@ -366,7 +366,9 @@ object RootKeeper {
         runCatching {
             local.parentFile?.mkdirs()
             context.assets.open(SCRIPT_NAME).bufferedReader().use { r ->
-                local.writeText(r.readText())
+                // 与 install 一样注入真实包名：否则 debug 包上自检探的是 release 包，
+                // 结论完全对不上（界面说未运行，实际跑着）
+                local.writeText(personalize(context, r.readText()))
             }
             local.setReadable(true, false)
             local.parentFile?.setExecutable(true, false)
