@@ -42,9 +42,31 @@ object KeepAlivePrefs {
      */
     private const val KEY_DESIRED_RUNNING = "keepalive/desired_running"
 
+    /**
+     * 后台自动开启：退到后台连续 1 分钟后若网关没在跑就自动拉起。
+     * 默认开启（用户 2026-10-21 要求该行为，但仍允许手动关掉）。
+     */
+    private const val KEY_BG_AUTOSTART = "keepalive/bg_autostart"
+
     /** 上次的网关状态；从未记录过（全新安装）返回 false。 */
     fun desiredRunning(store: dev.aigw.core.store.KeyValueStore): Boolean =
         store.read(KEY_DESIRED_RUNNING) == "1"
+
+    /** 后台 1 分钟自动开启；未设置过按开启处理。 */
+    fun bgAutoStartEnabled(store: dev.aigw.core.store.KeyValueStore): Boolean =
+        store.read(KEY_BG_AUTOSTART) != "0"
+
+    fun setBgAutoStartEnabled(store: dev.aigw.core.store.KeyValueStore, enabled: Boolean) {
+        store.write(KEY_BG_AUTOSTART, if (enabled) "1" else "0")
+    }
+
+    /** null = 用户从未表过态（全新安装 / 装上还没开过）。 */
+    fun desiredStateOrNull(store: dev.aigw.core.store.KeyValueStore): Boolean? =
+        when (store.read(KEY_DESIRED_RUNNING)) {
+            "1" -> true
+            "0" -> false
+            else -> null
+        }
 
     fun setDesiredRunning(store: dev.aigw.core.store.KeyValueStore, running: Boolean) {
         store.write(KEY_DESIRED_RUNNING, if (running) "1" else "0")
@@ -176,6 +198,22 @@ object GatewayIntent {
         }
 
     fun flagFile(context: Context) = java.io.File(context.filesDir, FLAG_NAME)
+
+    /**
+     * 用户是否**明确**关过网关（点过「停止服务」）。
+     *
+     * 与「从未表态」严格区分：全新安装后切个后台就自动开启是合理的，
+     * 但用户亲手关掉的，任何自动逻辑都不许把它拉回来。
+     * 加密存储读不出来时退回文件标记（存在即视为没关过）。
+     */
+    fun isExplicitlyStopped(context: Context): Boolean {
+        val appContext = context.applicationContext
+        val app = appContext as? AiGatewayApp
+        val state = runCatching { app?.let { KeepAlivePrefs.desiredStateOrNull(it.store) } }.getOrNull()
+        if (state != null) return !state
+        // 存储读不出来（未解锁等）：退回文件标记，没有标记就当用户关过，宁可不自动开
+        return !runCatching { flagFile(appContext).exists() }.getOrDefault(false)
+    }
 
     /**
      * 标记文件同步写（几字节，快），加密存储异步写：

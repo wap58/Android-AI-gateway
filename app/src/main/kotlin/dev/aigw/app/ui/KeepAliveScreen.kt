@@ -185,6 +185,29 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         SectionCard(enterIndex = 2) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
+                    Text("后台自动开启", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "应用退到后台并停留满 1 分钟后，若网关没在运行就自动拉起来。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = state.bgAutoStart,
+                    onCheckedChange = { viewModel.setBgAutoStart(it) },
+                )
+            }
+            Text(
+                text = "说明：你手动点过「停止服务」就不会被自动拉起，关掉网关就是真的关掉；" +
+                    "回到前台会重新计时，不会打断当前操作。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        SectionCard(enterIndex = 3) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
                     Text("开机自启", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
                     Text(
                         text = "系统启动后恢复到上次的状态：上次是开着的就自动拉起网关，上次是关着的就保持关闭。",
@@ -204,7 +227,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             )
         }
 
-        SectionCard(enterIndex = 3) {
+        SectionCard(enterIndex = 4) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text("隐藏多任务", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -227,7 +250,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             )
         }
 
-        SectionCard(enterIndex = 4) {
+        SectionCard(enterIndex = 5) {
             // 标题已写明「可选」，不再单挂一个「需 ROOT」红标（与文案重复且抢占视线）
             Column(Modifier.fillMaxWidth()) {
                 Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
@@ -347,7 +370,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         }
 
         // Shizuku 增强：无 Root 也能把系统的压制等级调低（Doze 白名单、standby 分级等）
-        SectionCard(enterIndex = 5) {
+        SectionCard(enterIndex = 6) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -413,7 +436,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard(enterIndex = 6) {
+        SectionCard(enterIndex = 7) {
             StatusRow(
                 title = "通知权限",
                 detail = if (status?.notificationsGranted == true) "已允许，常驻通知可见" else "未允许，后台通知不会显示",
@@ -459,7 +482,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             }
         }
 
-        SectionCard(enterIndex = 7) {
+        SectionCard(enterIndex = 8) {
             Text("厂商后台管理页", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             Text(
                 text = "国产系统默认会限制第三方应用后台。下面的入口会尝试直接打开厂商的后台管理页；" +

@@ -284,6 +284,8 @@ data class AppUiState(
     val overlayKeepAlive: Boolean = false,
     /** 开机自启：系统启动后自动拉起网关服务。 */
     val autoStart: Boolean = false,
+    /** 后台自动开启：退到后台满 1 分钟且网关没在跑时自动拉起。 */
+    val bgAutoStart: Boolean = true,
     /** 隐藏多任务：离开应用后从最近任务列表移除。 */
     val hideRecents: Boolean = false,
     /** 今天是否已签到成功（成功则首页按钮置灰）。 */
@@ -348,6 +350,7 @@ private class Snapshot(
     val failover: dev.aigw.core.failover.ModelFailoverSettings,
     val overlayKeepAlive: Boolean,
     val autoStart: Boolean,
+    val bgAutoStart: Boolean,
     val hideRecents: Boolean,
     val checkedInToday: Boolean,
     val checkinStatusText: String,
@@ -452,6 +455,7 @@ class AppViewModel(
                     failover = engine.failoverSettings(),
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     autoStart = dev.aigw.app.data.KeepAlivePrefs.autoStartEnabled(engine.store()),
+                    bgAutoStart = dev.aigw.app.data.KeepAlivePrefs.bgAutoStartEnabled(engine.store()),
                     hideRecents = dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
                     checkedInToday = engine.autoCheckinPrefs.isCheckedToday(System.currentTimeMillis()),
                     checkinStatusText = engine.autoCheckinPrefs.lastResultParsed().second,
@@ -481,6 +485,7 @@ class AppViewModel(
                 failover = snapshot.failover,
                 overlayKeepAlive = snapshot.overlayKeepAlive,
                 autoStart = snapshot.autoStart,
+                bgAutoStart = snapshot.bgAutoStart,
                 hideRecents = snapshot.hideRecents,
                 checkedInToday = snapshot.checkedInToday,
                 checkinStatusText = snapshot.checkinStatusText,
@@ -775,6 +780,17 @@ class AppViewModel(
      * 注意：开关只写自己的存储，真正的自启还需要系统「自启动」白名单放行
      * （国产 ROM 默认拦截），所以这里同时提示去厂商后台设置里放行。
      */
+    /** 开关「后台自动开启」：落盘后 BackgroundAutoStart 实时读取，下一轮后台即按新值判断。 */
+    fun setBgAutoStart(enabled: Boolean) {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setBgAutoStartEnabled(engine.store(), enabled)
+            }
+            notice(if (enabled) "后台自动开启已打开（退到后台 1 分钟后生效）" else "后台自动开启已关闭")
+            refresh()
+        }
+    }
+
     fun setAutoStart(enabled: Boolean) {
         viewModelScope.launch {
             withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setAutoStartEnabled(engine.store(), enabled) }

@@ -46,6 +46,8 @@ class AiGatewayApp : Application() {
         engine = created
         // 「隐藏多任务」保活：应用真正退到后台时把自己从最近任务列表移除。
         // 开关实时读取，用户改了立即生效，无需重新注册。
+        // 「后台 1 分钟自动开启」：退到后台满 1 分钟且网关没在跑时自动拉起（开关可控）
+        dev.aigw.app.service.BackgroundAutoStart.install(this)
         dev.aigw.app.service.HideRecents.install(this) {
             dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(store)
         }
