@@ -199,6 +199,10 @@ object GatewayIntent {
 
     fun flagFile(context: Context) = java.io.File(context.filesDir, FLAG_NAME)
 
+    /** 文件标记是否存在（= 上次/当前网关处于开启状态）。 */
+    fun isMarkedRunning(context: Context): Boolean =
+        runCatching { flagFile(context.applicationContext).exists() }.getOrDefault(false)
+
     /**
      * 用户是否**明确**关过网关（点过「停止服务」）。
      *
