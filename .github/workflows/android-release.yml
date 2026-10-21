@@ -48,6 +48,9 @@ jobs:
           keyPassword=$KEY_PASSWORD
           EOF
 
+      - name: 静态自检（括号平衡 / 空对象体 / 跨文件成员引用）
+        run: python3 selfcheck.py
+
       - name: 单元测试
         run: gradle :core:test --console=plain
 
