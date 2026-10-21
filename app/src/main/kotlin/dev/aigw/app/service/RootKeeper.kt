@@ -257,17 +257,26 @@ object RootKeeper {
         //   之前是先 kill 紧接着 rm -rf，可守护脚本在跑的时候会 `mkdir -p /data/adb/tyd`，
         //   残余进程在删除之后又把这个目录建了回来 —— 用户看到的就是
         //   「卸载了但 /data/adb/tyd 和脚本还在」。
-        // 多轮收敛：普通 kill → 宽限 → kill -9 → 再宽限，最多三轮。
-        // 单次 kill 在这类设备上确实出现过「PID 还在」的情况（进程处于不可中断状态
-        // 或 su 会话没真正送达信号），所以必须回读确认，不能发完就认为死了。
-        var killed = false
-        for (round in 0 until 3) {
-            val pids = findPids()
-            if (pids.isEmpty()) { killed = true; break }
-            for (pid in pids) runRoot("kill $pid")
-            if (waitGone(1_500)) { killed = true; break }
-            for (pid in findPids()) runRoot("kill -9 $pid")
-            if (waitGone(1_500)) { killed = true; break }
+        // ★ 卸载顺序：先让守护自己退，再删文件。
+        //
+        //   只靠 kill 不可靠：某些 su / SELinux 组合下信号会被静默丢弃，
+        //   进程继续跑 → 下个循环把刚删的目录 mkdir 回来 → 用户得反复点卸载。
+        //   所以先写 disabled 标记（守护每 5 秒自查一次，见到就 exit），
+        //   标记写不进去（账号没 root 权限 / 目录不存在）再退回 kill。
+        // 守护每 2 秒检查一次这个标记（它把 60 秒的探活间隔切成了 2 秒一段），
+        // 所以这里等 8 秒已经很宽裕。
+        runRoot("mkdir -p '$BASE_DIR' && echo 1 > '$BASE_DIR/disabled'")
+        var gone = waitGone(8_000)
+        if (!gone) {
+            // 标记没生效：多轮 kill → -9 → 再宽限
+            for (round in 0 until 3) {
+                val pids = findPids()
+                if (pids.isEmpty()) { gone = true; break }
+                for (pid in pids) runRoot("kill $pid")
+                if (waitGone(1_500)) { gone = true; break }
+                for (pid in findPids()) runRoot("kill -9 $pid")
+                if (waitGone(1_500)) { gone = true; break }
+            }
         }
 
         // 删除动作做两轮：第一轮删完后如果目录又出现（极少数情况下是残留进程
@@ -286,11 +295,11 @@ object RootKeeper {
                     "/data/adb/tyd_keepalive.log /data/adb/rootkeep_probe.sh",
             )
 
-            // 目录还在（说明有残留进程在 mkdir，或 rm 被 SELinux 拦）：
-            // 先看看是谁在跑，把进程再杀一轮，然后重试删除
+            // 目录还在（说明还有残活进程在 mkdir，或 rm 被 SELinux 拦）：
+            // 再杀一轮，然后重试删除
             if (baseDirExists() && findPids().isNotEmpty()) {
                 for (pid in findPids()) runRoot("kill -9 $pid")
-                waitGone(1_200)
+                waitGone(1_500)
             }
         }
 

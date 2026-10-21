@@ -9,7 +9,7 @@
 #      - Android 10 以下没有 /system/bin/curl
 #      - 很多设备 busybox 不在 PATH 里（APatch 的在 /data/adb/ap/bin/）
 #      - /dev/tcp 是 bash/ksh 的语法，Android 的 mksh 根本不支持
-#    三条全挂 → 探活恒为「死」→ 每 5 秒拉起一次，界面显示「拉起了但仍无响应」。
+#    三条全挂 → 探活恒为「死」→ 每轮都拉起一次，界面显示「拉起了但仍无响应」。
 #
 #    现在按「绝对路径 → 框架自带 busybox → toybox → /proc/net/tcp」依次回退，
 #    最后一级直接读内核 TCP 表判断端口是否 LISTEN，纯文本、任何 Android 都有。
@@ -28,10 +28,17 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.6"
+VER="2026-10-22.9"
 PORT=8877
-INTERVAL=5
+# 探活间隔（秒）。60 秒足够：这层守护只是兜底，网关平时由前台服务/系统保活。
+# 拉太密只是白白耗电 —— 每轮要起 curl + 读 /proc，一分钟一次已经能接受。
+INTERVAL=60
+# 分段等待粒度：把一次 INTERVAL 切成若干小段，
+# 每段结束都检查「是否该退出」+「是否恢复」。这样最坏情况下卸载也只等 TICK 秒，
+# 而不是等满一整个 INTERVAL。
+TICK=2
 BOOT_WAIT=20
+BASE_DIR=/data/adb/tyd
 LOG=/data/adb/tyd/keepalive.log
 MAXLOG=256000
 
@@ -41,6 +48,21 @@ FLAG="$FLAG_DIR/gateway_on.flag"
 
 # 静默标志：probe 模式（App 自检，3 秒一次）不能写日志
 QUIET=0
+
+# 分段等待：期间持续检查「该不该退出」，让卸载/停用能秒级响应。
+# 返回 0 = 正常等满；1 = 收到退出信号（调用方应立刻结束主循环）。
+tick_sleep() {
+  _left=$1
+  while [ "$_left" -gt 0 ]; do
+    # 卸载/停用标记：脚本被删或 disabled 文件出现就立刻退出
+    if [ ! -f "$0" ] || [ -f "$BASE_DIR/disabled" ]; then
+      return 1
+    fi
+    if [ "$_left" -gt "$TICK" ]; then sleep "$TICK"; _left=$((_left - TICK));
+    else sleep "$_left"; _left=0; fi
+  done
+  return 0
+}
 
 log() {
   [ "$QUIET" -eq 1 ] && return 0
@@ -203,10 +225,14 @@ set_state() {
 }
 
 # ---------------------------------------------------------- 拉起
+# 等系统服务就绪（开机早期 am/pm 还没起来）。
+# ★ 这段等待同样要能被「卸载/停用标记」打断，否则用户在想：怎么点了卸载没反应。
+#   实测过：不带检查时，卸载后进程在 wait_boot 里最长能耗满 120 秒。
 wait_boot() {
   i=0
   while [ $i -lt 60 ]; do
     if service check activity 2>/dev/null | grep -q found; then return 0; fi
+    if [ ! -f "$0" ] || [ -f "$BASE_DIR/disabled" ]; then return 2; fi
     sleep 2; i=$((i+1))
   done
   return 1
@@ -325,6 +351,12 @@ trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
 # ---------------------------------------------------------- 主循环
 log "=== 守护启动 v$VER (pid $$) 状态=$( [ -f "$STATE" ] && cat "$STATE" || echo 未记录 ) 端口=$PORT ==="
 wait_boot
+_wb=$?
+if [ "$_wb" -eq 2 ]; then
+  log "等待系统服务期间收到卸载/停用标记，守护退出"
+  rm -rf "$LOCK_DIR" 2>/dev/null
+  exit 0
+fi
 # 启动时把探活可用通道记一行，排障最有用的一条信息
 if alive; then :; fi
 [ -n "$PROBE_CH" ] && log "初始探活通道：$PROBE_CH" || log "警告：内置探活通道全部不可用，将依赖 /proc/net/tcp 兜底"
@@ -344,20 +376,20 @@ while true; do
     FAIL=0
     IDLE_LOGGED=0
     SEEN_ALIVE=1
-    sleep "$INTERVAL"
+    tick_sleep "$INTERVAL" || { log "收到卸载/停用标记，守护退出"; exit 0; }
     continue
   fi
 
   if ! pkg_installed; then
     [ "$IDLE_LOGGED" -eq 0 ] && log "包未安装，等待" && IDLE_LOGGED=1
-    sleep "$INTERVAL"
+    tick_sleep "$INTERVAL" || exit 0
     continue
   fi
 
   if ! wanted; then
     [ "$IDLE_LOGGED" -eq 0 ] && log "网关已由用户主动停止，守护待命" && IDLE_LOGGED=1
     FAIL=0
-    sleep "$INTERVAL"
+    tick_sleep "$INTERVAL" || exit 0
     continue
   fi
   IDLE_LOGGED=0
@@ -365,7 +397,7 @@ while true; do
   # 关掉了开机自启、且本次开机还没见它活过 -> 开机阶段不主动拉起
   if [ "$AUTOSTART" -eq 0 ] && [ "$SEEN_ALIVE" -eq 0 ]; then
     [ "$IDLE_LOGGED" -eq 0 ] && log "开机自启已关闭，本次开机未见网关运行，守护待命" && IDLE_LOGGED=1
-    sleep "$INTERVAL"
+    tick_sleep "$INTERVAL" || exit 0
     continue
   fi
 
@@ -373,7 +405,7 @@ while true; do
     log "应用进程不存在，网关必然不通 -> 立即拉起"
     kick "进程缺失"
     FAIL=0
-    sleep "$INTERVAL"
+    tick_sleep "$INTERVAL" || exit 0
     continue
   fi
 
@@ -383,5 +415,5 @@ while true; do
     kick "引擎无响应"
     FAIL=0
   fi
-  sleep "$INTERVAL"
+  tick_sleep "$INTERVAL" || exit 0
 done

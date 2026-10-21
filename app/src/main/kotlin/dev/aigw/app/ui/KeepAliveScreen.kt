@@ -272,7 +272,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 )
             }
             Text(
-                text = "守护脚本每 5 秒探活一次 http://127.0.0.1:${state.port}/healthz：进程没了立刻拉起，" +
+                text = "守护脚本每 60 秒探活一次 http://127.0.0.1:${state.port}/healthz：进程没了立刻拉起，" +
                     "进程在但端口不通连续 2 次就重启；期望状态持久化在 /data/adb/tyd/，重启后照样恢复。" +
                     "脚本固定放在 /data/adb/tyd/，一个脚本适配 Magisk / KernelSU / APatch / Sui 及纯 su，" +
                     "不用按方案换目录。",
@@ -359,7 +359,7 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     ok = rk.ok,
                     text = if (rk.ok) "已生效（被杀会自动复活）" else "未生效，请看上面哪项没通过",
                 )
-                // 日志只露 3 行：守护每 5 秒一轮，完整日志很快就能把卡片撑很长。
+                // 日志只露 3 行：守护每分钟一轮，但日志会持续累积，完整日志放弹窗里看。
                 // 整块可点，末尾「查看更多」进弹窗看完整的。
                 if (rk.logTail.isNotEmpty()) {
                     val lines = rk.logTail.lines().filter { it.isNotBlank() }
