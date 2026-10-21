@@ -1047,10 +1047,15 @@ class AppViewModel(
     fun uninstallRootKeeper() = action {
         when (val r = dev.aigw.app.service.RootKeeper.uninstall(app)) {
             dev.aigw.app.service.RootKeeper.UninstallResult.Done -> {
-                refreshRootKeeperState()
-                "Root 守护已卸载。"
+                // 清空界面上的旧快照：否则卡片会继续显示上次的「运行中 / 已生效」，
+                // 用户以为没卸干净（实际是界面数据没刷新）。
+                _state.value = _state.value.copy(rootKeeper = null)
+                refreshRootKeeperState(forceSuCheck = true)
+                "Root 守护已卸载（进程、开机脚本与 /data/adb/tyd 均已清除）"
             }
             is dev.aigw.app.service.RootKeeper.UninstallResult.NoRoot -> r.detail
+            is dev.aigw.app.service.RootKeeper.UninstallResult.Partial ->
+                "卸载未彻底：${r.detail}。请再点一次「卸载」，或检查 root 管理器是否拦截了删除。"
         }
     }
 

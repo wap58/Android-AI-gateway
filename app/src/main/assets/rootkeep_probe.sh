@@ -68,7 +68,9 @@ else
   echo "PROBE=FAIL"
 fi
 
-# ---- 已铺设的开机目录（完整路径；界面自己截短）
+# ---- 已铺设的开机转发目录（完整路径；界面自己截短）
+# 正常只会有一个（脚本按当前 root 方案精确铺设）。历史残留的副本也一并报出来，
+# 让界面能看见「该清理了」，而不是悄悄忽略。
 DIRS=""
 for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d /data/adb/post-fs-data.d; do
   if [ -f "$d/$NAME" ]; then
@@ -76,6 +78,9 @@ for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d /dat
   fi
 done
 echo "DIR=$DIRS"
+
+# ---- 工作目录内容（/data/adb/tyd：真身、探针、状态、日志都在这一个目录里）
+echo "WORKDIR=$(ls -1 /data/adb/tyd 2>/dev/null | tr '\n' ' ')"
 
 # ---- 守护实例数：>1 说明单实例锁没生效，正常应恒为 1（0 表示没在跑）
 echo "INSTANCES=$(pgrep -f 'tyd_keepalive.sh\$' 2>/dev/null | wc -l | tr -d ' ')"

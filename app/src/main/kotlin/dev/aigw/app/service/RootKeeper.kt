@@ -87,8 +87,11 @@ object RootKeeper {
 
     /** 卸载结果。 */
     sealed interface UninstallResult {
+        /** 卸载干净：进程、开机转发、真身目录、App 内副本全部清掉。 */
         data object Done : UninstallResult
         data class NoRoot(val detail: String) : UninstallResult
+        /** 卸载后仍有残留（进程没死 / 文件删不掉），[detail] 说明还剩什么。 */
+        data class Partial(val detail: String) : UninstallResult
     }
 
     /**
@@ -126,6 +129,8 @@ object RootKeeper {
         val probeFailed: Boolean = false,
         /** 当前在跑的守护实例数（正常应为 1；>1 说明单实例锁失效）。 */
         val instances: Int = 0,
+        /** /data/adb/tyd 下的文件清单（排障用：应只有脚本、探针、状态、日志、锁）。 */
+        val workDirContents: List<String> = emptyList(),
     ) {
         /** 磁盘脚本是否落后于 APK（需要用户点一次「重装」）。 */
         val outdated: Boolean
@@ -176,18 +181,18 @@ object RootKeeper {
                 "mv /data/adb/tyd_keepalive.log '$LOG_PATH'; fi",
         )
 
-        // 所有可能的开机目录都放一个转发脚本：谁执行都能跑到真身，重复执行也无害
+        // 转发脚本只铺**当前方案对应的那一个**目录。
+        // 真身（/data/adb/tyd/tyd_keepalive.sh）三家共用没问题，
+        // 但开机入口必须精确：铺多个的话，同一个开关在不同框架下被触发多次，
+        // 一份内容不一致就成不可预期的故障，用户看界面也会疑惑「为什么三个」。
         val shim = shimText()
         val installedDirs = mutableListOf<String>()
         for (dir in launchDirs()) {
-            // 目录已存在才写：mkdir -p 会凭空造出 /data/adb/ap/ 这类假目录
-            val exists = runRootOutput("test -d '$dir' && echo yes").contains("yes")
-            if (!exists) continue
             if (putFile("$dir/$SHIM_NAME", shim, "755")) installedDirs += dir
         }
 
-        // 清掉老版本留下的、内容不同的同名脚本（以前是真身直接铺在 service.d 里，
-        // 那份现在会被转发脚本覆盖；其它框架目录里的旧副本也要清，避免两份互抢）
+        // 清掉其余目录里的历史副本（老版本曾在四个目录全写）。
+        // 不清的话界面会继续显示好几个开机目录，而那些是残留、根本不该在。
         cleanupOldCopies(keep = installedDirs)
 
         // 已在跑就先停，保证新脚本立即生效（否则要等下次重启）。
@@ -236,7 +241,9 @@ object RootKeeper {
 
     /** 清掉旧版本留在各开机目录里的「真身脚本」副本（内容与新 shim 不同）。 */
     private fun cleanupOldCopies(keep: List<String>) {
-        for (dir in launchDirs()) {
+        // 遍历**全部**候选目录：老版本在多个目录都放过脚本，升级后要清掉多余的，
+        // 否则界面上又会看到好几个开机目录（那些是历史残留，不是本次写入的）。
+        for (dir in allLaunchDirs()) {
             if (dir in keep) continue
             runRoot("rm -f '$dir/$SHIM_NAME'")
         }
@@ -245,15 +252,82 @@ object RootKeeper {
     /** 卸载：停掉守护进程并删除各处脚本。 */
     fun uninstall(context: Context): UninstallResult {
         if (!hasRoot()) return UninstallResult.NoRoot("未获取到 root")
-        for (pid in findPids()) runRoot("kill $pid")
-        // 转发脚本全清
-        for (dir in launchDirs()) runRoot("rm -f '$dir/$SHIM_NAME'")
-        // 真身与配套文件一起清
-        runRoot("rm -rf '$BASE_DIR'")
+
+        // ★ 顺序很重要：必须先确认进程死透，再删文件。
+        //   之前是先 kill 紧接着 rm -rf，可守护脚本在跑的时候会 `mkdir -p /data/adb/tyd`，
+        //   残余进程在删除之后又把这个目录建了回来 —— 用户看到的就是
+        //   「卸载了但 /data/adb/tyd 和脚本还在」。
+        // 多轮收敛：普通 kill → 宽限 → kill -9 → 再宽限，最多三轮。
+        // 单次 kill 在这类设备上确实出现过「PID 还在」的情况（进程处于不可中断状态
+        // 或 su 会话没真正送达信号），所以必须回读确认，不能发完就认为死了。
+        var killed = false
+        for (round in 0 until 3) {
+            val pids = findPids()
+            if (pids.isEmpty()) { killed = true; break }
+            for (pid in pids) runRoot("kill $pid")
+            if (waitGone(1_500)) { killed = true; break }
+            for (pid in findPids()) runRoot("kill -9 $pid")
+            if (waitGone(1_500)) { killed = true; break }
+        }
+
+        // 删除动作做两轮：第一轮删完后如果目录又出现（极少数情况下是残留进程
+        // 或其它副本写回来的），第二轮连同刚重建的一起删掉。
+        repeat(2) { attempt ->
+            if (attempt > 0 && !baseDirExists()) return@repeat
+
+            // 开机转发脚本：所有候选目录都清（老版本可能在多个目录留过副本）
+            for (dir in allLaunchDirs()) runRoot("rm -f '$dir/$SHIM_NAME'")
+
+            // 真身目录整个删掉：脚本、探针、状态、日志、锁都在里面
+            runRoot("rm -rf '$BASE_DIR'")
+            // 老版本散落在 /data/adb 根下的文件也一并清
+            runRoot(
+                "rm -f /data/adb/tyd_keepalive.sh /data/adb/tyd_keepalive.state " +
+                    "/data/adb/tyd_keepalive.log /data/adb/rootkeep_probe.sh",
+            )
+
+            // 目录还在（说明有残留进程在 mkdir，或 rm 被 SELinux 拦）：
+            // 先看看是谁在跑，把进程再杀一轮，然后重试删除
+            if (baseDirExists() && findPids().isNotEmpty()) {
+                for (pid in findPids()) runRoot("kill -9 $pid")
+                waitGone(1_200)
+            }
+        }
+
+        // App 内副本与「已安装」标记
         File(context.filesDir, "rootkeep/$SCRIPT_NAME").delete()
-        markerFile(context).delete()
+        File(context.filesDir, "rootkeep/$PROBE_SCRIPT_NAME").delete()
+        File(context.filesDir, "rootkeep/installed").delete()
         probeDeployedSha = 0
-        return UninstallResult.Done
+
+        // 验证：进程、开机转发、真身目录三者都必须没了，否则如实报告残留
+        val leftovers = mutableListOf<String>()
+        val alive = findPids()
+        if (alive.isNotEmpty()) leftovers += "进程仍在（PID ${alive.joinToString(",")}）"
+        val shims = allLaunchDirs().filter { dir ->
+            runRootOutput("test -f '$dir/$SHIM_NAME' && echo yes").contains("yes")
+        }
+        if (shims.isNotEmpty()) leftovers += "开机脚本仍在（${shims.joinToString("、")}）"
+        if (baseDirExists()) leftovers += "$BASE_DIR 仍在"
+
+        return if (leftovers.isEmpty()) {
+            UninstallResult.Done
+        } else {
+            UninstallResult.Partial(leftovers.joinToString("；"))
+        }
+    }
+
+    private fun baseDirExists(): Boolean =
+        runRootOutput("test -e '$BASE_DIR' && echo yes").contains("yes")
+
+    /** 等守护进程全部退出，返回是否已清空。 */
+    private fun waitGone(timeoutMs: Long): Boolean {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            if (findPids().isEmpty()) return true
+            Thread.sleep(150)
+        }
+        return findPids().isEmpty()
     }
 
     /**
@@ -348,6 +422,25 @@ object RootKeeper {
         // ★ 全部状态用**一次** su 调用取回（assets/rootkeep_probe.sh 输出 KEY=VALUE）。
         // 之前这里是 7 次独立 su：守护页每 3 秒轮询一轮，等于每秒 2 个 su 进程，
         // 锁屏时授权排队会直接卡住界面，电量也顶不住。
+        // ★ 未安装（marker 不存在）时不要去部署探针：
+        //   之前卸载后 verify 仍每 3 秒跑一次，ensureProbeScript 会把
+        //   /data/adb/tyd/probe.sh 又写回去 —— 用户卸载完发现目录还在，就是这个原因。
+        if (!markerFile(context).exists() && findPid().isEmpty()) {
+            return Verify(
+                processAlive = false,
+                pid = "",
+                probeWorks = false,
+                probeOutput = "",
+                registeredDirs = emptyList(),
+                rootFlavor = rootFlavor(),
+                logTail = "",
+                desiredRunning = null,
+                suAvailable = true,
+                scriptVersion = "",
+                bundledVersion = bundledScriptVersion(context),
+            )
+        }
+
         val script = ensureLocalScript(context)
         // ★ 参数顺序：跑的是**探针脚本**，第一个参数才是守护脚本路径。
         //   写反的后果是探针根本没被执行，输出恒为空 ——
@@ -418,6 +511,7 @@ object RootKeeper {
             scriptVersion = fields["VER"].orEmpty(),
             bundledVersion = bundledScriptVersion(context),
             instances = fields["INSTANCES"]?.toIntOrNull() ?: 0,
+            workDirContents = fields["WORKDIR"].orEmpty().split(' ').filter { it.isNotBlank() },
         )
     }
 
@@ -566,26 +660,85 @@ object RootKeeper {
      *
      * 转发脚本自身做了单实例判断，即使多个目录都被执行也不会起多个守护。
      */
-    private fun launchDirs(): List<String> = listOf(
-        "/data/adb/service.d",          // Magisk / APatch（Magisk 兼容目录）
-        "/data/adb/ksu/service.d",      // KernelSU / Sukisu
-        "/data/adb/ap/service.d",       // 部分 APatch 版本
-        "/data/adb/post-fs-data.d",     // Magisk 早期阶段（不作为主启动，但保留兜底）
+    /** Root 方案。 */
+    enum class Flavor(val label: String) {
+        Magisk("Magisk"),
+        KernelSu("KernelSU/Sukisu"),
+        APatch("APatch"),
+        /** 有模块目录但认不出具体框架。 */
+        MagiskLike("Magisk 系"),
+        /** 纯 su（无框架）：没有任何开机目录会被执行。 */
+        PlainSu("纯 su"),
+        ;
+
+        /** APatch 与 Magisk 都走 /data/adb/service.d（APatch 用的是 Magisk 兼容目录）。 */
+        val launchDir: String?
+            get() = when (this) {
+                Magisk, APatch, MagiskLike -> "/data/adb/service.d"
+                KernelSu -> "/data/adb/ksu/service.d"
+                PlainSu -> null
+            }
+    }
+
+    /**
+     * 识别当前 Root 方案。
+     *
+     * APatch 放在最前：它也会带一份 magisk 兼容目录，放在后面判会被认成 Magisk，
+     * 而 APatch 自己的标志是 /data/adb/apd（二进制）或 /data/adb/ap（目录）。
+     */
+    fun detectFlavor(): Flavor {
+        val out = runRootOutput(
+            "if [ -f /data/adb/apd ] || [ -d /data/adb/ap ]; then echo apatch; " +
+                "elif [ -d /data/adb/ksu ]; then echo ksu; " +
+                "elif [ -d /data/adb/magisk ]; then echo magisk; " +
+                "elif [ -d /data/adb/modules ]; then echo magisklike; " +
+                "else echo plain; fi"
+        ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
+        return when (out) {
+            "apatch" -> Flavor.APatch
+            "ksu" -> Flavor.KernelSu
+            "magisk" -> Flavor.Magisk
+            "magisklike" -> Flavor.MagiskLike
+            else -> Flavor.PlainSu
+        }
+    }
+
+    /**
+     * 本次要铺转发脚本的开机目录：**只铺一个**，就是当前方案自己的那一个。
+     *
+     * 铺全部的代价不是几个小文件，而是「同一件事有好几份配置」——
+     * 用户看界面会疑惑为什么要三个；一旦其中某份内容不一致（旧版本残留、
+     * 手改过、复制时被截断），故障现象就变得不可预期。
+     * 精度换来的是「看得懂、可预期」。
+     *
+     * 只有当方案对应的目录不存在时才退让一步：从其它候选里挑**一个**已存在的，
+     * 保证「有 root 但目录缺失」的机器也能开机自启，同时仍然只有一个入口。
+     */
+    private fun launchDirs(): List<String> {
+        val preferred = detectFlavor().launchDir
+        if (preferred != null && dirExists(preferred)) return listOf(preferred)
+
+        // 退让候选：按可靠性排序（service.d 最通用，post-fs-data.d 太早，系统服务常未就绪）
+        val fallbacks = listOf("/data/adb/service.d", "/data/adb/ksu/service.d", "/data/adb/ap/service.d")
+        return (listOfNotNull(preferred) + fallbacks)
+            .distinct()
+            .filter { it != preferred && dirExists(it) }
+            .take(1)
+    }
+
+    private fun dirExists(dir: String): Boolean =
+        runRootOutput("test -d '$dir' && echo yes").contains("yes")
+
+    /** 所有可能放转发脚本的目录（用于清理旧版本的多余副本）。 */
+    private fun allLaunchDirs(): List<String> = listOf(
+        "/data/adb/service.d",
+        "/data/adb/ksu/service.d",
+        "/data/adb/ap/service.d",
+        "/data/adb/post-fs-data.d",
     )
 
     /** 当前 Root 方案的展示名，用于界面提示。 */
-    fun rootFlavor(): String {
-        // 只在「方案指纹」目录都被读不到时才回退到「纯 su」；
-        // 早先只看 /data/adb/ap/bin，APatch 各版本布局不同就被误判成「纯 su」。
-        val out = runRootOutput(
-            "if [ -f /data/adb/apd ] || [ -d /data/adb/ap ]; then echo APatch; " +
-                "elif [ -d /data/adb/ksu ]; then echo KernelSU/Sukisu; " +
-                "elif [ -d /data/adb/magisk ]; then echo Magisk; " +
-                "elif [ -d /data/adb/modules ]; then echo Magisk 系; " +
-                "else echo 纯 su; fi"
-        ).trim().lineSequence().lastOrNull { it.isNotBlank() }.orEmpty()
-        return out.ifEmpty { "未知" }
-    }
+    fun rootFlavor(): String = detectFlavor().label
 
     /** 探测 root 是否可用且已授权（超时短，失败要快）。 */
     private fun hasRoot(): Boolean = suAvailable(force = true)
@@ -648,10 +801,16 @@ object RootKeeper {
     private fun findPids(): List<String> =
         // 锚定行尾：自检探针会以 `sh tyd_keepalive.sh probe` 形式启动，
         // 不锚定的话那一瞬间会被误认成守护进程（进程明明死了却显示「运行中」）。
-        runRootOutput("pgrep -f '$SCRIPT_NAME\$' 2>/dev/null")
+        runRootOutput(
+            // 两条路兜底：pgrep 在个别 busybox 环境里行为不一致（-f 不完全匹配 cmdline），
+            // 用 ps 再过一遍，避免「明明在跑却抓不到 PID」导致卸载杀不掉。
+            "pgrep -f '$SCRIPT_NAME\$' 2>/dev/null; " +
+                "ps -A -o PID,ARGS 2>/dev/null | grep -F '$SCRIPT_NAME' | grep -v grep | awk '{print \$1}'",
+        )
             .lineSequence()
             .map { it.trim() }
             .filter { it.matches(Regex("\\d+")) }
+            .distinct()
             .toList()
 
     private fun findPid(): String = findPids().firstOrNull().orEmpty()

@@ -28,7 +28,7 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.5"
+VER="2026-10-22.6"
 PORT=8877
 INTERVAL=5
 BOOT_WAIT=20
@@ -315,7 +315,12 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
 fi
 echo $$ > "$LOCK_DIR/pid"
 # 无论怎么退出都释放锁，否则下一次起来会被自己的残留锁挡住
-trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
+# 退出时释放锁。
+# ★ trap 里必须显式 exit：只写 `rm -rf` 的话，收到 TERM/INT 后进程只是删了个锁，
+#   主循环继续转 —— 表现就是「kill 了还在跑」，卸载时删完目录又被它踩回来。
+#   （实测确认过：不加 exit 时 terminate 后 5 秒进程仍然存活。）
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null; exit 0' INT TERM HUP
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
 
 # ---------------------------------------------------------- 主循环
 log "=== 守护启动 v$VER (pid $$) 状态=$( [ -f "$STATE" ] && cat "$STATE" || echo 未记录 ) 端口=$PORT ==="
