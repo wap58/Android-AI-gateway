@@ -30,29 +30,39 @@ class BootReceiver : BroadcastReceiver() {
             action != "com.htc.intent.action.QUICKBOOT_POWERON"
         ) return
 
-        // 开关存在加密存储里：读失败（未解锁/被卸载重装等）就当作未开启。
-        val app = context.applicationContext as? AiGatewayApp ?: return
-        val enabled = runCatching { KeepAlivePrefs.autoStartEnabled(app.store) }.getOrDefault(false)
-        if (!enabled) return
+        // ★ 必须 goAsync：下面要读加密存储（首次解密要建 MasterKey + 解全量设置，几百毫秒），
+        //   在 onReceive 里同步做会占住主线程 —— 开机广播有 10 秒超时窗口，
+        //   慢设备上直接被系统判 ANR，用户看到的是「开机弹一个无响应对话框」。
+        val pending = goAsync()
+        Thread({
+            try {
+                // 开关存在加密存储里：读失败（未解锁/被卸载重装等）就当作未开启。
+                val app = context.applicationContext as? AiGatewayApp ?: return@Thread
+                val enabled = runCatching { KeepAlivePrefs.autoStartEnabled(app.store) }
+                    .getOrDefault(false)
+                if (!enabled) return@Thread
 
-        // 恢复上次状态：上次（关机 / 崩溃 / 被清理前）网关是停止的，开机就不该把它拉起来。
-        // 只有「上次是运行中」才恢复，避免用户主动停掉后重启又自己跑起来。
-        // 加密存储（权威）与文件标记（兜底）任一存在即视为「上次是开着的」：
-        // 开机早期加密存储可能读不出（用户凭据未就绪），标记文件没有这个限制。
-        val desired = runCatching { KeepAlivePrefs.desiredRunning(app.store) }.getOrDefault(false) ||
-            GatewayIntent.isMarkedRunning(app)
-        if (!desired) return
+                // 恢复上次状态：上次（关机 / 崩溃 / 被清理前）网关是停止的，开机就不该把它拉起来。
+                // 只有「上次是运行中」才恢复，避免用户主动停掉后重启又自己跑起来。
+                // 加密存储（权威）与文件标记（兜底）任一存在即视为「上次是开着的」：
+                // 开机早期加密存储可能读不出，标记文件没有这个限制。
+                val desired = runCatching { KeepAlivePrefs.desiredRunning(app.store) }
+                    .getOrDefault(false) || GatewayIntent.isMarkedRunning(context)
+                if (!desired) return@Thread
 
-        val svc = Intent(context, GatewayService::class.java)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                ContextCompat.startForegroundService(context, svc)
-            } else {
-                context.startService(svc)
+                val svc = Intent(context, GatewayService::class.java)
+                runCatching {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        ContextCompat.startForegroundService(context, svc)
+                    } else {
+                        context.startService(svc)
+                    }
+                }
+                // 开机早期被系统拦截（权限未就绪 / 自启动白名单未放行）属常见情况，
+                // 静默放弃，由系统白名单或用户手动打开兜底。
+            } finally {
+                pending.finish()
             }
-        } catch (_: Throwable) {
-            // 开机早期被系统拦截（权限未就绪 / 自启动白名单未放行）属常见情况，
-            // 静默放弃，由系统白名单或用户手动打开兜底。
-        }
+        }, "boot-restore").start()
     }
 }

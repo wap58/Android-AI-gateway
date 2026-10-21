@@ -340,8 +340,9 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                fullLogText = viewModel.loadFullRootKeeperLog()
+                                fullLogText = ""
                                 showLogDialog = true
+                                viewModel.loadFullRootKeeperLog { fullLogText = it }
                             },
                     ) {
                         Text(

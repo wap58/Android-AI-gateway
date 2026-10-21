@@ -247,10 +247,13 @@ object GatewayIntent {
             // 单线程串行化：连续快速开关时，后写的不能先落地
             storeWriter.execute {
                 runCatching { KeepAlivePrefs.setDesiredRunning(app.store, running) }
+                // 同步到 root 域（/data/adb/tyd_keepalive.state）：清 App 数据、重启后守护仍记得状态。
+                // 端口一并下发，否则用户改端口后守护会一直探错端口（恒判「死」）。
+                // ★ 放在这里是为了避开主线程：settings() 要解密存储，调用方
+                //   （服务 onStartCommand、磁贴点击）都在主线程，直接读就是一次掉帧。
+                val port = runCatching { app.engine?.settings()?.port ?: 0 }.getOrDefault(0)
+                runCatching { dev.aigw.app.service.RootKeeper.syncState(running, port) }
             }
         }
-        // 同步到 root 域（/data/adb/tyd_keepalive.state）：清 App 数据、重启后守护仍记得状态。
-        // 没有 root 时内部直接返回，不影响其它逻辑。
-        runCatching { dev.aigw.app.service.RootKeeper.syncState(running) }
     }
 }

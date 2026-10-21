@@ -31,22 +31,30 @@ class GatewayService : Service() {
         // 而且「服务已启动」本身就是用户要的反馈，不应等引擎验证完才弹。
         // NanoHTTPD.start(timeout=0) 会同步等 bind 完成/抛出，engine.start() 返回
         // 即端口已就绪，所以这里不需要任何先导耗时操作。
-        startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
+        // ★ 先读「用户到底想不想开」，再决定要不要写回状态。
+        //   顺序反了的话，下面 write 完再读必然为真，START_NOT_STICKY 分支永远走不到，
+        //   「用户点了停止」对系统侧完全失效（进程被回收时系统照样重建服务）。
+        val userWants = dev.aigw.app.data.GatewayIntent.isMarkedRunning(applicationContext)
+
+        // startForeground 也要包起来：部分 ROM 在 sticky 重建、通知被禁的边界情况下会抛异常，
+        // 裸调用会让服务在 onStartCommand 内直接崩溃 → 系统再重建 → 再崩，形成崩溃循环。
+        val notified = runCatching {
+            startForeground(NOTIFICATION_ID, buildNotification(engine.settings().port))
+        }.isSuccess
+
         val started = engine.isRunning() || runCatching { engine.start() }.isSuccess
         if (started) {
-            // 服务能起来就说明网关此刻应当运行：补记期望状态（Root 守护/开机自启据此恢复）
-            dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
             engine.requestLog.info("前台服务已拉起，通知已发布")
             acquireLocks()
             applyOverlay(engine)
-            // 恢复上次状态：用户希望网关开着（标记存在）时用 START_STICKY，
-            // 系统回收进程后由系统重建服务、网关自动恢复，无需用户再打开 App；
-            // 用户已主动停止则 START_NOT_STICKY，绝不自己冒出来。
-            return if (dev.aigw.app.data.GatewayIntent.isMarkedRunning(applicationContext)) {
-                START_STICKY
-            } else {
-                START_NOT_STICKY
+            // 恢复上次状态：只有在用户确实想要运行（或从未表态）时才写回，
+            // 绝不用「服务自己被拉起」去反转用户的「停止」操作。
+            if (userWants) dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
+            if (!notified) {
+                engine.requestLog.warn("前台通知发布失败，本次仅以普通服务运行（网关照常可用）")
+                return START_NOT_STICKY
             }
+            return if (userWants) START_STICKY else START_NOT_STICKY
         }
         // 引擎没起来：撤掉刚发的通知再退出，避免「通知说运行中、端口没人听」
         stopSelf()

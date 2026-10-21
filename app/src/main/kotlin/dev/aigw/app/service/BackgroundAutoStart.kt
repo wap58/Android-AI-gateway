@@ -85,14 +85,16 @@ object BackgroundAutoStart {
         pending = null
         // 等期内又回到前台：放弃这次
         if (startedCount > 0) return
-        // 开关关掉：用户不想要这个行为（读不到存储时按开启处理，保持默认行为）
-        val store = (app as? dev.aigw.app.AiGatewayApp)?.store
-        val switchOn = store == null ||
-            runCatching { dev.aigw.app.data.KeepAlivePrefs.bgAutoStartEnabled(store) }.getOrDefault(true)
-        if (!switchOn) return
-        // 用户主动停止过：绝不自作主张
-        if (GatewayIntent.isExplicitlyStopped(app)) return
+        // ★ 所有判断都要读加密存储（解密一次几百毫秒），必须离开主线程做。
+        //   这段回调是 Handler(Looper.getMainLooper()) 发的，直接在主线程序列化就是一次掉帧。
         Thread({
+            val store = (app as? dev.aigw.app.AiGatewayApp)?.store
+            val switchOn = store == null ||
+                runCatching { dev.aigw.app.data.KeepAlivePrefs.bgAutoStartEnabled(store) }
+                    .getOrDefault(true)
+            if (!switchOn) return@Thread
+            // 用户主动停止过：绝不自作主张
+            if (GatewayIntent.isExplicitlyStopped(app)) return@Thread
             val engine = runCatching { app.gatewayEngine }.getOrNull() ?: return@Thread
             if (engine.isRunning()) return@Thread
 
@@ -102,6 +104,12 @@ object BackgroundAutoStart {
             // 前台服务再尽力尝试，成功就顺带拿到保活与常驻通知，失败也不影响网关可用。
             val startedOk = runCatching { engine.start() }.isSuccess
             if (!startedOk) return@Thread
+
+            // ★ 无论前台服务是否成功，都要把「用户希望网关开着」落盘：
+            //   这条路径存在的理由恰好就是「后台启动前台服务被系统拒绝」，
+            //   若只在服务里补写，那种情况下状态永远是「关」——
+            //   守护脚本会把已经跑着的网关当成用户主动停止，杀掉后再也不恢复。
+            runCatching { GatewayIntent.markRunning(app, true) }
 
             val fgs = runCatching {
                 ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))

@@ -56,8 +56,15 @@ object ApkUpdater {
      * @param version 用于文件名，便于用户辨认
      * @return 下载任务 id；失败返回 -1
      */
-    fun download(context: Context, url: String, version: String): Long {
-        val fileName = "tianyuanding-$version.apk"
+    fun download(context: Context, url: String, version: String, attempt: Int = 0): Long {
+        // 换镜像重下时文件名必须变：同名目标文件已存在（上一次失败留下的半截文件）
+        // 会让 DownloadManager 直接报 ERROR_FILE_ALREADY_EXISTS，
+        // 于是每个镜像都失败，用户看到「所有下载地址都失败了」。
+        val fileName = if (attempt == 0) {
+            "tianyuanding-$version.apk"
+        } else {
+            "tianyuanding-$version-$attempt.apk"
+        }
         val request = DownloadManager.Request(Uri.parse(url))
             .setTitle("天元鼎 $version")
             .setDescription("正在下载更新…")

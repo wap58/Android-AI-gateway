@@ -28,7 +28,7 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-21.2"
+VER="2026-10-22.1"
 PORT=8877
 INTERVAL=5
 BOOT_WAIT=20
@@ -39,14 +39,19 @@ STATE=/data/adb/tyd_keepalive.state
 FLAG_DIR=/data/user/0/dev.tyd.app/files
 FLAG="$FLAG_DIR/gateway_on.flag"
 
-# 端口 8877 的十六进制（/proc/net/tcp 用大写十六进制、端口在后半段）
-PORT_HEX=$(printf '%04X' "$PORT")
+# 静默标志：probe 模式（App 自检，3 秒一次）不能写日志
+QUIET=0
 
 log() {
+  [ "$QUIET" -eq 1 ] && return 0
   echo "$(date '+%m-%d %H:%M:%S') $*" >> "$LOG"
   if [ -f "$LOG" ]; then
     sz=$(wc -c < "$LOG" 2>/dev/null || echo 0)
-    [ "$sz" -gt "$MAXLOG" ] && tail -c 64000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+    # ★ 必须原地截断，不能 mv 换文件：守护进程持有的是原 inode 的写句柄，
+    #   mv 之后它继续往「已 unlink 的文件」里写，日志从此停更、空间也不释放。
+    if [ "$sz" -gt "$MAXLOG" ]; then
+      tail -c 64000 "$LOG" > "$LOG.keep" 2>/dev/null && cat "$LOG.keep" > "$LOG" && rm -f "$LOG.keep"
+    fi
   fi
 }
 
@@ -72,15 +77,42 @@ _port_listening() {
   return 1
 }
 
-# 记录最近一次成功的探活通道，供排障（只在新通道生效时写一行日志）
+# 记录最近一次成功的探活通道：
+#   - 供排障（只在新通道生效时写一行日志）
+#   - ★ 下一次探活优先用它，避免每次都从 curl 开始逐个试错
+#     （curl 存在但网关已死时，每个候选都要等满 3 秒超时，一轮能拖到十几秒）
 PROBE_CH=""
 probe_changed() {
   [ "$1" = "$PROBE_CH" ] && return
   PROBE_CH="$1"
-  log "探活通道：$1"
+  # probe 模式（App 自检）每 3 秒调一次，不能往日志里写，否则日志分钟级就涨满
+  [ "$QUIET" -eq 1 ] || log "探活通道：$1"
+}
+
+# 按通道名直接试一次（通道缓存命中时用，避免重复逐级回退）
+try_channel() {
+  case "$1" in
+    *busybox*wget) [ -x "${1%% *}" ] && "${1%% *}" wget -q -T 3 -O /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null ;;
+    *toybox*wget) [ -x /system/bin/toybox ] && /system/bin/toybox wget -q -T 3 -O /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null ;;
+    /proc/net/tcp*) _port_listening ;;
+    /dev/tcp) (echo > /dev/tcp/127.0.0.1/$PORT) >/dev/null 2>&1 ;;
+    curl*)
+      # "curl(PATH)" 是日志里的展示名，实际命令就是 PATH 里的 curl
+      case "$1" in
+        "curl(PATH)") command -v curl >/dev/null 2>&1 && _curl_ok curl ;;
+        *) [ -x "$1" ] && _curl_ok "$1" ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 alive() {
+  # 0) 上次成功的通道直接再试一次：命中就返回，省掉逐级试错的时间
+  if [ -n "$PROBE_CH" ]; then
+    if try_channel "$PROBE_CH"; then return 0; fi
+  fi
+
   # 1) curl 绝对路径（Android 10+ 自带；不走 PATH，避免 su 环境 PATH 精简）
   for c in /system/bin/curl /system/xbin/curl /data/adb/ap/bin/curl /data/adb/ksu/bin/curl; do
     if [ -x "$c" ]; then
@@ -150,14 +182,16 @@ pkg_installed() {
 # 2) root 域状态文件（重启/清数据后仍存在的持久真值）
 # 3) 都没有 → 默认 on
 wanted() {
-  if [ -d "$FLAG_DIR" ] && [ -r "$FLAG_DIR" ]; then
-    [ -f "$FLAG" ]
-    return $?
-  fi
+  # flag 存在 = 明确开着，直接采信（这是 App 的实时真值）
+  if [ -f "$FLAG" ]; then return 0; fi
+  # flag 不存在有两种可能：用户点了停止（App 会删）或 App 数据被清空/重装。
+  # 这两种不能混为一谈 —— 前者要停手，后者应该按持久状态恢复，
+  # 所以只要 STATE 文件存在，就以它为最终裁决。
   if [ -f "$STATE" ]; then
-    [ "$(cat "$STATE" 2>/dev/null | tr -d ' \r\n')" = "off" ] && return 1
+    [ "$(cat "$STATE" 2>/dev/null | tr -d ' \r\n' | cut -d' ' -f1)" = "off" ] && return 1
     return 0
   fi
+  # 两个来源都没有：全新环境，默认 on（守护都装了，显然是想保活）
   return 0
 }
 
@@ -189,12 +223,21 @@ kick() {
   i=0
   while [ $i -lt "$BOOT_WAIT" ]; do
     sleep 1
+    # 用户在这期间点了「停止」就立刻放弃：否则我们一边等一边把它又拉起来，
+    # 用户看到的是「关了又自己开」，最长能拖 40 秒。
+    if ! wanted; then
+      log "等待期间用户已停止，放弃本次拉起"
+      # 把刚起来的服务也撤掉，避免留下一个不该在的网关
+      am stop-service -n "$SVC" >/dev/null 2>&1
+      return 1
+    fi
     if alive; then
       log "已恢复（等待 ${i}s）"
       return 0
     fi
     i=$((i+1))
   done
+  if ! wanted; then log "用户已停止，放弃第二轮"; return 1; fi
   # 第二轮：进程仍没起来时补发一次（部分 ROM 首发被拦、第二次才放行）
   if ! app_running; then
     am start-foreground-service -n "$SVC" >/dev/null 2>&1
@@ -212,11 +255,25 @@ kick() {
   return 1
 }
 
+# ---------------------------------------------------------- 端口
+# state 文件格式："on 8877" / "off"，第二段是网关端口（用户可在 App 里改）。
+# 读不到就沿用脚本里的默认值。
+if [ -f "$STATE" ]; then
+  _p=$(cat "$STATE" 2>/dev/null | tr -d '\r' | cut -d' ' -f2)
+  case "$_p" in
+    ''|*[!0-9]*) : ;;
+    *) PORT="$_p" ;;
+  esac
+  unset _p
+fi
+PORT_HEX=$(printf '%04X' "$PORT")
+
 # ---------------------------------------------------------- probe 模式
 # 用法：sh tyd_keepalive.sh probe
 # 只探一次，输出所用通道名或 FAIL 后退出。App 自检调用它，
 # 保证界面上的「探活通道」与守护内部用的是同一套判断。
 if [ "$1" = "probe" ]; then
+  QUIET=1
   probe_channel
   exit 0
 fi

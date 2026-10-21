@@ -30,12 +30,21 @@ class GatewayTileService : TileService() {
             engine.requestLog.info("控制中心磁贴停止了网关")
         } else {
             // 磁贴点击允许直接拉前台服务（用户交互），引擎启动失败再撤
-            ContextCompat.startForegroundService(
-                applicationContext,
-                Intent(applicationContext, GatewayService::class.java),
-            )
+            // 用户点磁贴 = 明确表态要开，先落状态再拉起（顺序很重要：
+            // 服务里会读这个状态决定 START_STICKY，晚了就会退化成「不自恢复」）
+            dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
+            val fgs = runCatching {
+                ContextCompat.startForegroundService(
+                    applicationContext,
+                    Intent(applicationContext, GatewayService::class.java),
+                )
+            }
             val ok = runCatching { engine.start() }.isSuccess
-            if (ok) dev.aigw.app.data.GatewayIntent.markRunning(applicationContext, true)
+            if (!fgs.isSuccess) {
+                // 拿不到前台身份不影响网关照常工作（引擎在进程内起 server），
+                // 只是少了常驻通知与保活，不因此把服务撤掉
+                engine.requestLog.warn("磁贴启动前台服务失败，本次仅以普通服务运行")
+            }
             if (!ok) {
                 applicationContext.stopService(Intent(applicationContext, GatewayService::class.java))
             }

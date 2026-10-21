@@ -500,7 +500,9 @@ class AppViewModel(
                     overlayKeepAlive = dev.aigw.app.data.KeepAlivePrefs.overlayEnabled(engine.store()),
                     autoStart = dev.aigw.app.data.KeepAlivePrefs.autoStartEnabled(engine.store()),
                     bgAutoStart = dev.aigw.app.data.KeepAlivePrefs.bgAutoStartEnabled(engine.store()),
-                    hideRecents = dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
+                    // 与能力相与：Android 11 以下没有运行期接口，开关不该显示为「已开」
+                    hideRecents = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                        dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
                     checkedInToday = engine.autoCheckinPrefs.isCheckedToday(System.currentTimeMillis()),
                     checkinStatusText = engine.autoCheckinPrefs.lastResultParsed().second,
                 )
@@ -752,9 +754,16 @@ class AppViewModel(
     fun startGateway() {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在启动服务")
+            // ★ 先落「用户要它开着」，再起服务：
+            //   服务里会根据这个状态决定 START_STICKY / NOT_STICKY，
+            //   晚写就会让「首次开启」的这次运行退化成「进程被回收后不自恢复」。
+            withContext(Dispatchers.IO) { GatewayIntent.markRunning(app, true) }
             // 先拉前台服务再启动引擎：startForegroundService 立即弹出通知，
-            // engine.start() 幂等（server != null 直接返回），Service 里会再调一次兑底
-            ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
+            // engine.start() 幂等（server != null 直接返回），Service 里会再调一次兑底。
+            // 后台起前台服务在部分 ROM 上会抛异常，包起来：失败也不影响引擎启动。
+            runCatching {
+                ContextCompat.startForegroundService(app, Intent(app, GatewayService::class.java))
+            }
             val error = withContext(Dispatchers.IO) {
                 runCatching { engine.start() }.exceptionOrNull()?.let { it.message ?: "启动失败" }
             }
@@ -877,6 +886,12 @@ class AppViewModel(
      * 会让系统把当前任务也结束掉。真正的移除发生在下次退到后台时。
      */
     fun setHideRecents(enabled: Boolean) {
+        // Android 11 以下没有「运行期把任务排除出最近列表」的公开 API，
+        // 只有清单里的静态属性。这里直接告知用户，别让开关看着打开却毫无效果。
+        if (enabled && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            notice("当前系统不支持隐藏多任务（需 Android 11 及以上）")
+            return
+        }
         viewModelScope.launch {
             withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setHideRecentsEnabled(engine.store(), enabled) }
             // 立即同步标记，无需等下次退后台（只改标记，不销毁任务）
@@ -958,13 +973,28 @@ class AppViewModel(
             val v = withContext(Dispatchers.IO) {
                 runCatching { dev.aigw.app.service.RootKeeper.verify(app, forceSuCheck) }.getOrNull()
             }
-            _state.value = _state.value.copy(rootKeeper = v)
+            // 查询失败（su 超时 / 被拒）时保留上一次的结果：
+            // 置 null 会让「Root 卡片」整块消失，用户会以为 root 权限丢了，
+            // 实际只是这一次查询没成功。
+            if (v != null) _state.value = _state.value.copy(rootKeeper = v)
         }
     }
 
     /** 读完整守护日志（「更多」弹窗用，同步返回，调用方放 IO 或点击回调里）。 */
-    fun loadFullRootKeeperLog(): String =
-        runCatching { dev.aigw.app.service.RootKeeper.readFullLog(app) }.getOrDefault("")
+    /**
+     * 读完整守护日志。
+     *
+     * ★ 必须异步：读日志要起一个 su 进程，首次授权会弹框等待；
+     * 之前是同步返回、UI 在点击回调里直接调用 —— 点「查看更多」就是一次 ANR 风险。
+     */
+    fun loadFullRootKeeperLog(onLoaded: (String) -> Unit) {
+        viewModelScope.launch {
+            val text = withContext(Dispatchers.IO) {
+                runCatching { dev.aigw.app.service.RootKeeper.readFullLog(app) }.getOrDefault("")
+            }
+            onLoaded(text)
+        }
+    }
 
     /** 清空守护日志。 */
     fun clearRootKeeperLog() = action {
@@ -1689,8 +1719,13 @@ class AppViewModel(
      */
     fun maybeAutoCheckUpdate() {
         if (!_state.value.autoCheckUpdate) return
-        if (updateStore.lastCheckEpochDay() == currentEpochDay()) return
-        performUpdateCheck(manual = false)
+        // 读「今天检查过没有」也要解密存储，同样不能在主线程做
+        viewModelScope.launch {
+            val checkedToday = withContext(Dispatchers.IO) {
+                updateStore.lastCheckEpochDay() == currentEpochDay()
+            }
+            if (!checkedToday) performUpdateCheck(manual = false)
+        }
     }
 
     fun setAutoCheckUpdate(enabled: Boolean) {
@@ -1741,11 +1776,26 @@ class AppViewModel(
     /** 当前下载尝试到第几个地址（镜像失败会自动换下一个）。 */
     private var downloadAttempt = 0
 
+    /**
+     * 正在进行的下载轮询任务。
+     *
+     * 必须持有并取消：用户连点两次「立即更新」会起两个轮询协程，
+     * 它们盯着同一个 activeDownloadId —— 下载完成时**两次**拉起安装器，
+     * 表现为连续弹两个安装界面；而且旧的协程还会拿着过期的 downloadAttempt
+     * 把新一轮的计数改乱，镜像轮换彻底失控。
+     */
+    private var downloadWatchJob: Job? = null
+
     fun startInAppUpdate() {
         val info = _state.value.updateInfo ?: return
         if (info.apkUrl.isEmpty()) {
             notice("该版本没有提供安装包直链，已打开下载页")
             openReleasePage(info.url)
+            return
+        }
+        // 已经在下载中：不重复发起，只提示一句
+        if (downloadWatchJob?.isActive == true) {
+            notice("正在下载中，请稍候…")
             return
         }
         downloadAttempt = 0
@@ -1765,7 +1815,12 @@ class AppViewModel(
             openReleasePage(info.url)
             return
         }
-        val id = dev.aigw.app.update.ApkUpdater.download(app, candidates[downloadAttempt], info.version)
+        val id = dev.aigw.app.update.ApkUpdater.download(
+            app,
+            candidates[downloadAttempt],
+            info.version,
+            attempt = downloadAttempt,
+        )
         if (id < 0) {
             downloadAttempt++
             beginDownload(info)
@@ -1777,7 +1832,9 @@ class AppViewModel(
 
     /** 轮询下载状态：完成就拉起安装器，失败就提示。 */
     private fun watchDownload(version: String, info: UpdateInfo) {
-        viewModelScope.launch {
+        // 每轮新下载都取代旧的轮询（旧协程可能因镜像失败已 return，这里再兜一次）
+        downloadWatchJob?.cancel()
+        downloadWatchJob = viewModelScope.launch {
             repeat(600) {  // 最多等 10 分钟（每 2 秒一次）
                 delay(2_000)
                 when (val st = dev.aigw.app.update.ApkUpdater.downloadState(app)) {
@@ -1826,38 +1883,48 @@ class AppViewModel(
         if (_state.value.updateChecking) return
         _state.value = _state.value.copy(updateChecking = true)
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) { runCatching { fetchLatestRelease() } }
-            // 自动检查无论成败都记一次「今天已检查」，保证每天最多一次
-            if (!manual) updateStore.setLastCheckEpochDay(currentEpochDay())
-            outcome.fold(
-                onSuccess = { info ->
-                    if (info.version.isEmpty()) {
-                        // 通道里还没发布过任何版本（例如测试版通道刚开）
-                        if (manual) {
-                            _state.value = _state.value.copy(
-                                notice = "已是最新版本（${installedVersionName()}）；${_state.value.updateChannel.label}通道暂无新版本",
-                            )
+            // ★ try/finally 兜住 updateChecking：中间任何一处抛异常（JSON 解析、NPE 等）
+            //   都会让这个标志永远停在 true —— 此后手动「检查更新」被开头的 return 挡掉、
+            //   自动检查也再不会跑，按钮永久置灰，只能杀进程重来。
+            try {
+                val outcome = withContext(Dispatchers.IO) { runCatching { fetchLatestRelease() } }
+                // 自动检查无论成败都记一次「今天已检查」，保证每天最多一次。
+                // ★ 必须放 IO 线程：加密存储的 write 是「全量重加密 + fsync」，几百毫秒，
+                //   在主线程做就是一次可见的卡顿（冷启动自动检查时正好压在首帧上）。
+                if (!manual) {
+                    withContext(Dispatchers.IO) { updateStore.setLastCheckEpochDay(currentEpochDay()) }
+                }
+                outcome.fold(
+                    onSuccess = { info ->
+                        if (info.version.isEmpty()) {
+                            // 通道里还没发布过任何版本（例如测试版通道刚开）
+                            if (manual) {
+                                _state.value = _state.value.copy(
+                                    notice = "已是最新版本（${installedVersionName()}）；${_state.value.updateChannel.label}通道暂无新版本",
+                                )
+                            }
+                            return@fold
                         }
-                        return@fold
-                    }
-                    // 测试通道同版本号会反复重建（CI 每次都是新包），
-                    // 仅比版本号会永远显示「已是最新」。补一条：发布晚于本机安装时间也算有更新。
-                    val rebuilt = _state.value.updateChannel == UpdateChannel.Beta &&
-                        !isNewer(info.version, installedVersionName()) &&
-                        info.publishedAt > installedUpdateTime() + 60_000L
-                    if (isNewer(info.version, installedVersionName()) || rebuilt) {
-                        _state.value = _state.value.copy(updateInfo = info)
-                    } else if (manual) {
-                        _state.value = _state.value.copy(notice = "已是最新版本（${installedVersionName()}）")
-                    }
-                },
-                onFailure = { e ->
-                    if (manual) {
-                        _state.value = _state.value.copy(notice = "检查更新失败：${e.message ?: "网络异常"}")
-                    }
-                },
-            )
-            _state.value = _state.value.copy(updateChecking = false)
+                        // 测试通道同版本号会反复重建（CI 每次都是新包），
+                        // 仅比版本号会永远显示「已是最新」。补一条：发布晚于本机安装时间也算有更新。
+                        val rebuilt = _state.value.updateChannel == UpdateChannel.Beta &&
+                            !isNewer(info.version, installedVersionName()) &&
+                            info.publishedAt > installedUpdateTime() + 60_000L
+                        if (isNewer(info.version, installedVersionName()) || rebuilt) {
+                            _state.value = _state.value.copy(updateInfo = info)
+                        } else if (manual) {
+                            _state.value = _state.value.copy(notice = "已是最新版本（${installedVersionName()}）")
+                        }
+                    },
+                    onFailure = { e ->
+                        if (manual) {
+                            _state.value = _state.value.copy(notice = "检查更新失败：${e.message ?: "网络异常"}")
+                        }
+                    },
+                )
+            } finally {
+                _state.value = _state.value.copy(updateChecking = false)
+            }
         }
     }
 
