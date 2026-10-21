@@ -262,7 +262,8 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 )
             }
             Text(
-                text = "守护脚本每 20 秒探活一次 http://127.0.0.1:${state.port}/healthz，连续 2 次无响应就重新拉起网关服务。" +
+                text = "守护脚本每 5 秒探活一次 http://127.0.0.1:${state.port}/healthz：进程没了立刻拉起，" +
+                    "进程在但端口不通连续 2 次就重启；期望状态持久化在 /data/adb，重启后照样恢复。" +
                     "兼容 Magisk / KernelSU / APatch / Sui 及纯 su 环境。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -300,11 +301,20 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     else rk.registeredDirs.joinToString("、") { it.substringAfterLast('/') },
                 )
                 RootStatusLine(
+                    label = "记忆状态",
+                    ok = rk.desiredRunning != false,
+                    text = when (rk.desiredRunning) {
+                        true -> "运行中（重启后自动恢复）"
+                        false -> "已停止（守护待命，不会自己拉起）"
+                        null -> "未记录（首次写入后生效）"
+                    },
+                )
+                RootStatusLine(
                     label = "整体",
                     ok = rk.ok,
                     text = if (rk.ok) "已生效（被杀会自动复活）" else "未生效，请看上面哪项没通过",
                 )
-                // 日志只露 3 行：守护每 20 秒一轮，完整日志很快就能把卡片撑很长。
+                // 日志只露 3 行：守护每 5 秒一轮，完整日志很快就能把卡片撑很长。
                 // 整块可点，末尾「查看更多」进弹窗看完整的。
                 if (rk.logTail.isNotEmpty()) {
                     val lines = rk.logTail.lines().filter { it.isNotBlank() }

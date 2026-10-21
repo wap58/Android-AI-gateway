@@ -33,6 +33,13 @@ object RootKeeper {
     /** 守护脚本写日志的固定路径（与 assets/tyd_keepalive.sh 里的 LOG 保持一致）。 */
     private const val LOG_PATH = "/data/adb/tyd_keepalive.log"
 
+    /**
+     * 守护状态真值（root 域，重启 / 清 App 数据都不丢）：
+     * on = 用户希望网关开着，off = 用户主动停止。
+     * App 每次启停都尝试改写；没有 root 时守护退回读 App 私有目录的标记文件。
+     */
+    private const val STATE_PATH = "/data/adb/tyd_keepalive.state"
+
     /** su 命令等待上限（秒）：用户不点授权框时不能永久卡住。 */
     private const val SU_TIMEOUT_SEC = 20L
 
@@ -72,6 +79,10 @@ object RootKeeper {
         val rootFlavor: String = "未知",
         /** 日志尾部（无日志时为空）。 */
         val logTail: String,
+        /** 守护记录的期望状态：true=会保活，false=用户主动停止，null=未记录。 */
+        val desiredRunning: Boolean? = null,
+        /** 状态文件路径（界面提示用）。 */
+        val statePath: String = STATE_PATH,
     ) {
         val ok: Boolean get() = processAlive && probeWorks
     }
@@ -163,6 +174,31 @@ object RootKeeper {
         return UninstallResult.Done
     }
 
+    /**
+     * 把「用户期望状态」写进 root 域状态文件，让守护在重启后也知道该不该恢复。
+     *
+     * 异步、失败静默：没有 root 时守护仍能读 App 私有目录的标记文件，
+     * 这里失败不影响功能，只是少了「清数据后仍记得」这一层保障。
+     */
+    fun syncState(running: Boolean) {
+        Thread({
+            runCatching {
+                if (!hasRoot()) return@runCatching
+                runRoot("echo ${if (running) "on" else "off"} > $STATE_PATH && chmod 644 $STATE_PATH")
+            }
+        }, "rootkeep-state").apply { isDaemon = true }.start()
+    }
+
+    /** 读取守护侧记录的期望状态；null 表示尚未记录或读不到。 */
+    fun readState(): Boolean? {
+        val out = runRootOutput("cat $STATE_PATH 2>/dev/null").trim()
+        return when (out) {
+            "on" -> true
+            "off" -> false
+            else -> null
+        }
+    }
+
     /** 守护进程是否在运行。 */
     fun isRunning(): Boolean = hasRoot() && findPid().isNotEmpty()
 
@@ -199,6 +235,7 @@ object RootKeeper {
             registeredDirs = dirs,
             rootFlavor = rootFlavor(),
             logTail = readLog(context).take(400),
+            desiredRunning = readState(),
         )
     }
 

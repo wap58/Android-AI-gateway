@@ -249,5 +249,8 @@ object GatewayIntent {
                 runCatching { KeepAlivePrefs.setDesiredRunning(app.store, running) }
             }
         }
+        // 同步到 root 域（/data/adb/tyd_keepalive.state）：清 App 数据、重启后守护仍记得状态。
+        // 没有 root 时内部直接返回，不影响其它逻辑。
+        runCatching { dev.aigw.app.service.RootKeeper.syncState(running) }
     }
 }
