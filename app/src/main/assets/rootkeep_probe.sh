@@ -68,7 +68,7 @@ else
   echo "PROBE=FAIL"
 fi
 
-# ---- 已铺设的开机目录
+# ---- 已铺设的开机目录（完整路径；界面自己截短）
 DIRS=""
 for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d /data/adb/post-fs-data.d; do
   if [ -f "$d/$NAME" ]; then
@@ -76,5 +76,8 @@ for d in /data/adb/service.d /data/adb/ksu/service.d /data/adb/ap/service.d /dat
   fi
 done
 echo "DIR=$DIRS"
+
+# ---- 守护实例数：>1 说明单实例锁没生效，正常应恒为 1（0 表示没在跑）
+echo "INSTANCES=$(pgrep -f 'tyd_keepalive.sh\$' 2>/dev/null | wc -l | tr -d ' ')"
 
 exit 0

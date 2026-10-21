@@ -307,8 +307,13 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 )
                 RootStatusLine(
                     label = "守护进程",
-                    ok = rk.processAlive,
-                    text = if (rk.processAlive) "运行中（PID ${rk.pid}）" else "未运行",
+                    // 多实例是异常：几个守护会互相抢着拉起服务，还会各写一份日志
+                    ok = rk.processAlive && rk.instances <= 1,
+                    text = when {
+                        !rk.processAlive -> "未运行"
+                        rk.instances > 1 -> "异常：${rk.instances} 个实例在跑（应为 1），点「重装」修复"
+                        else -> "运行中（PID ${rk.pid}）"
+                    },
                 )
                 // 直接显示守护脚本实际使用的探活通道（curl / busybox / toybox / /proc 兜底），
                 // 排障时一眼能看出用的是哪一级，不必再猜是工具缺失还是网关真死了。
@@ -321,8 +326,15 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                 RootStatusLine(
                     label = "开机目录",
                     ok = rk.registeredDirs.isNotEmpty(),
-                    text = if (rk.registeredDirs.isEmpty()) "无（系统没有 service.d，重启后需重开应用）"
-                    else rk.registeredDirs.joinToString("、") { it.substringAfterLast('/') },
+                    text = if (rk.registeredDirs.isEmpty()) {
+                        "无（系统没有 service.d，重启后需重开应用）"
+                    } else {
+                        // /data/adb/service.d 与 /data/adb/ksu/service.d 末段同名，
+                        // 只显示末段会像「同一个目录列了三次」。取末两段区分。
+                        rk.registeredDirs.joinToString("、") { dir ->
+                            dir.trimEnd('/').split('/').takeLast(2).joinToString("/")
+                        }
+                    },
                 )
                 RootStatusLine(
                     label = "记忆状态",

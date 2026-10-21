@@ -28,7 +28,7 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.4"
+VER="2026-10-22.5"
 PORT=8877
 INTERVAL=5
 BOOT_WAIT=20
@@ -295,9 +295,29 @@ if [ "$1" = "probe" ]; then
   exit 0
 fi
 
-# ---------------------------------------------------------- 主循环
+# ---------------------------------------------------------- 单实例锁
+# ★ 必须在这里自己加锁，不能只靠 shim 里的 pgrep：
+#   Magisk / KernelSU / APatch 的开机目录几乎同时执行，各自 pgrep 时
+#   前一个还处在 setsid 启动的窗口里，于是全部通过检查 —— 一次开机起好几个守护，
+#   互相抢着 am start-foreground-service（日志里连续三行「守护启动」就是这个）。
+#   mkdir 是原子的，谁先建目录谁留下，其余立刻退出。
 mkdir -p /data/adb/tyd 2>/dev/null
+LOCK_DIR=/data/adb/tyd/daemon.lock
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  _old=$(cat "$LOCK_DIR/pid" 2>/dev/null)
+  if [ -n "$_old" ] && kill -0 "$_old" 2>/dev/null; then
+    # 已有存活实例，安静退出（不写日志，避免每次开机刷一行）
+    exit 0
+  fi
+  # 锁是残留的（进程已死 / 上次被 kill -9）：清掉重抢
+  rm -rf "$LOCK_DIR" 2>/dev/null
+  mkdir "$LOCK_DIR" 2>/dev/null || exit 0
+fi
+echo $$ > "$LOCK_DIR/pid"
+# 无论怎么退出都释放锁，否则下一次起来会被自己的残留锁挡住
+trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT INT TERM HUP
 
+# ---------------------------------------------------------- 主循环
 log "=== 守护启动 v$VER (pid $$) 状态=$( [ -f "$STATE" ] && cat "$STATE" || echo 未记录 ) 端口=$PORT ==="
 wait_boot
 # 启动时把探活可用通道记一行，排障最有用的一条信息

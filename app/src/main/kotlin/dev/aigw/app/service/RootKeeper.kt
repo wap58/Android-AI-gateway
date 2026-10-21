@@ -124,6 +124,8 @@ object RootKeeper {
         val bundledVersion: String = "",
         /** 探针脚本这次没跑出结果（读不到 / su 被拒）：其余字段不可信，界面要如实说明。 */
         val probeFailed: Boolean = false,
+        /** 当前在跑的守护实例数（正常应为 1；>1 说明单实例锁失效）。 */
+        val instances: Int = 0,
     ) {
         /** 磁盘脚本是否落后于 APK（需要用户点一次「重装」）。 */
         val outdated: Boolean
@@ -188,13 +190,15 @@ object RootKeeper {
         // 那份现在会被转发脚本覆盖；其它框架目录里的旧副本也要清，避免两份互抢）
         cleanupOldCopies(keep = installedDirs)
 
-        // 已在跑就先停，保证新脚本立即生效（否则要等下次重启）
+        // 已在跑就先停，保证新脚本立即生效（否则要等下次重启）。
+        // 锁目录也要清：被 kill -9 的实例来不及执行 trap，残缺的锁会让新实例起不来。
         for (oldPid in findPids()) runRoot("kill $oldPid")
         for (i in 0 until 15) {
             if (findPids().isEmpty()) break
             Thread.sleep(200)
         }
 
+        runRoot("rm -rf '$BASE_DIR/daemon.lock'")
         val startOk = runRoot("setsid sh '$SCRIPT_PATH' >/dev/null 2>&1 & echo started")
         var pid = ""
         for (i in 0 until 12) {
@@ -223,8 +227,9 @@ object RootKeeper {
         #!/system/bin/sh
         # 天元鼎 · 开机转发（由 APP 生成，勿手改；真身在 $SCRIPT_PATH）
         [ -f '$SCRIPT_PATH' ] || exit 0
-        # 单实例：已有守护就不重复启动
-        if pgrep -f 'tyd_keepalive.sh\$' >/dev/null 2>&1; then exit 0; fi
+        # 单实例交给真身自己用 mkdir 原子锁判断。
+        # 这里不能靠 pgrep：各开机目录几乎同时执行，彼此都在启动窗口内，
+        # pgrep 看到的是「还没起来」，于是全都放行 —— 一次开机起好几个守护。
         setsid sh '$SCRIPT_PATH' >/dev/null 2>&1 &
         exit 0
     """.trimIndent() + "\n"
@@ -387,8 +392,9 @@ object RootKeeper {
             .split(',')
             .map { it.trim() }
             .filter { it.isNotEmpty() }
-            // 探针只报目录名（如 service.d），界面展示需要完整路径语义，
-            // 但短名更好读；这里保持短名，与之前的展示一致
+            // 探针回报的是完整路径。/data/adb/service.d 与 /data/adb/ksu/service.d
+            // 末段都叫 service.d，界面上要显示成区分得开的短路径（adb/service.d、
+            // ksu/service.d），否则看起来像「同一个目录重复了三遍」。
 
         // 探活成功的判据：脚本输出的是通道名（含 curl / busybox / toybox / proc / tcp），
         // 只有明确 FAIL 或空才算不可用。
@@ -411,6 +417,7 @@ object RootKeeper {
             // 以磁盘上真正在跑的那份为准（probe 脚本读的是它），APK 内置版本用于比对
             scriptVersion = fields["VER"].orEmpty(),
             bundledVersion = bundledScriptVersion(context),
+            instances = fields["INSTANCES"]?.toIntOrNull() ?: 0,
         )
     }
 
