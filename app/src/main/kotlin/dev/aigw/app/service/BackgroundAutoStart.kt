@@ -42,7 +42,9 @@ object BackgroundAutoStart {
     fun install(app: Application) {
         if (installed) return
         installed = true
-        val application = app.applicationContext
+        // 直接用 Application 本身：applicationContext 的静态类型是 Context，
+        // 传给需要 Application 的 schedule() 会编译失败
+        val application: Application = app
         // 进程可能在后台被创建（服务/磁贴拉起），此时先排一次队：
         // 若前台从未出现过，等待期内用户打开应用就会被取消，不会误触发。
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
