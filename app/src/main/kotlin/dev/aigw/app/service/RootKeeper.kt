@@ -43,6 +43,12 @@ object RootKeeper {
     /** su 命令等待上限（秒）：用户不点授权框时不能永久卡住。 */
     private const val SU_TIMEOUT_SEC = 20L
 
+    /** su 探测缓存：null = 还没探过。 */
+    @Volatile
+    private var suCache: Boolean? = null
+    @Volatile
+    private var suCheckedAt = 0L
+
     /** 安装结果。 */
     sealed interface Result {
         /** 安装成功，守护进程已在运行。[pid] 为守护进程号。 */
@@ -83,6 +89,11 @@ object RootKeeper {
         val desiredRunning: Boolean? = null,
         /** 状态文件路径（界面提示用）。 */
         val statePath: String = STATE_PATH,
+        /**
+         * 当前设备是否真的能拿到 root（su 能返回 uid=0）。
+         * 界面据此决定是否显示 Root 卡片：拿不到 root 时整块隐藏，避免一堆永远红色的未通过项。
+         */
+        val suAvailable: Boolean = false,
     ) {
         val ok: Boolean get() = processAlive && probeWorks
     }
@@ -217,7 +228,22 @@ object RootKeeper {
      *    （ busybox 不在 PATH、wget 不存在，脚本就会永远判定「已死」或永远判定「活着」）
      * 3. 铺了哪些开机目录
      */
-    fun verify(context: Context): Verify {
+    fun verify(context: Context, forceSuCheck: Boolean = false): Verify {
+        // 拿不到 root 就直接返回「不支持」，不往下跑任何 su 命令：
+        // 否则每次轮询都会起好几个 su 子进程（非 root 设备上每个都要等失败），白白耗电。
+        if (!suAvailable(force = forceSuCheck)) {
+            return Verify(
+                processAlive = false,
+                pid = "",
+                probeWorks = false,
+                probeOutput = "",
+                registeredDirs = emptyList(),
+                rootFlavor = "未知",
+                logTail = "",
+                desiredRunning = null,
+                suAvailable = false,
+            )
+        }
         val pid = findPid()
         // 探活：按 curl → wget → /dev/tcp 依次回退。
         // 这条命令里没有引号、没有分号拼接，能避开 su 传参时的转义问题。
@@ -236,6 +262,7 @@ object RootKeeper {
             rootFlavor = rootFlavor(),
             logTail = readLog(context).take(400),
             desiredRunning = readState(),
+            suAvailable = true,
         )
     }
 
@@ -331,7 +358,54 @@ object RootKeeper {
     }
 
     /** 探测 root 是否可用且已授权（超时短，失败要快）。 */
-    private fun hasRoot(): Boolean = runRootOutput("id").contains("uid=0")
+    private fun hasRoot(): Boolean = suAvailable(force = true)
+
+    /** su 探测结果的缓存时间：页面每 3 秒轮询一次，没必要每次都起 su 进程。 */
+    private const val SU_CACHE_MS = 30_000L
+
+    /**
+     * 当前能否拿到 root（su 返回 uid=0）。
+     *
+     * 用 3 秒短超时，而不是通用的 20 秒：没 root 的设备上 `su` 可能不存在（立刻失败），
+     * 也可能存在但会弹授权框并挂住 —— 两种情况都不该让界面卡 20 秒。
+     */
+    fun suAvailable(force: Boolean = false): Boolean {
+        val now = System.currentTimeMillis()
+        val cached = suCache
+        if (!force && cached != null && now - suCheckedAt < SU_CACHE_MS) return cached
+        val ok = runSuQuick("id").trim().contains("uid=0")
+        suCache = ok
+        suCheckedAt = now
+        return ok
+    }
+
+    /** 以 root 跑一条短命令并回收输出，超时 3 秒即放弃（拿不到 root 的场景用）。 */
+    private fun runSuQuick(cmd: String): String {
+        val p = try {
+            ProcessBuilder("su", "0", "-c", cmd).redirectErrorStream(true).start()
+        } catch (_: Exception) {
+            return ""
+        }
+        val sb = StringBuilder()
+        try {
+            p.inputStream.bufferedReader().use { r ->
+                var line: String?
+                while (r.readLine().also { line = it } != null) sb.append(line).append('\n')
+            }
+        } catch (_: Exception) {
+        }
+        return try {
+            if (!p.waitFor(3, TimeUnit.SECONDS)) {
+                p.destroyForcibly()
+                ""
+            } else {
+                sb.toString()
+            }
+        } catch (_: Exception) {
+            runCatching { p.destroyForcibly() }
+            ""
+        }
+    }
 
     /** 找守护进程 PID：按脚本名匹配，避免误杀别人的 sh。 */
     private fun findPid(): String {

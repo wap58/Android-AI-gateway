@@ -61,8 +61,10 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.reapplyOverlayIfEnabled()
                 viewModel.refresh()
-                // Root 守护状态要回读，不能只看「按钮点过没有」
-                viewModel.refreshRootKeeperState()
+                // Root 守护状态要回读，不能只看「按钮点过没有」。
+                // 回到本页时强制重探 root 权限：用户可能刚在 Root 管理器里授权完，
+                // 不强制的话要等 30 秒缓存过期卡片才出现。
+                viewModel.refreshRootKeeperState(forceSuCheck = true)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -250,7 +252,11 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
             )
         }
 
-        SectionCard(enterIndex = 5) {
+        // Root 卡片只在「确实拿得到 root」时出现。
+        // 没有 root / 拿不到授权时整块隐藏：否则界面上永远挂着一排红色未通过项，
+        // 用户既做不了什么，也看不懂为什么全是叉。
+        // 首次进入时 rootKeeper 还是 null（尚未探测），此时先不渲染，探测完再决定显隐。
+        if (state.rootKeeper?.suAvailable == true) SectionCard(enterIndex = 5) {
             // 标题已写明「可选」，不再单挂一个「需 ROOT」红标（与文案重复且抢占视线）
             Column(Modifier.fillMaxWidth()) {
                 Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)

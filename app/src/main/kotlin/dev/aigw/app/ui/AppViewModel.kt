@@ -876,11 +876,16 @@ class AppViewModel(
         }
     }
 
-    /** 刷新 Root 守护的实测状态（进页面时调一次，避免每帧起 su 进程）。 */
-    fun refreshRootKeeperState() {
+    /**
+     * 刷新 Root 守护的实测状态（进页面时调一次，避免每帧起 su 进程）。
+     *
+     * [forceSuCheck]：强制重新探测 root 权限（结果有 30 秒缓存）。
+     * 用户去 Root 管理器授权完回到本页时传 true，否则要等半分钟卡片才出现。
+     */
+    fun refreshRootKeeperState(forceSuCheck: Boolean = false) {
         viewModelScope.launch {
             val v = withContext(Dispatchers.IO) {
-                runCatching { dev.aigw.app.service.RootKeeper.verify(app) }.getOrNull()
+                runCatching { dev.aigw.app.service.RootKeeper.verify(app, forceSuCheck) }.getOrNull()
             }
             _state.value = _state.value.copy(rootKeeper = v)
         }
