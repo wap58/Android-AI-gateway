@@ -261,14 +261,20 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         // 用户既做不了什么，也看不懂为什么全是叉。
         // 首次进入时 rootKeeper 还是 null（尚未探测），此时先不渲染，探测完再决定显隐。
         if (state.rootKeeper?.suAvailable == true) SectionCard(enterIndex = 5) {
-            // 只留一句必要说明：解释「为什么需要 root」和「它做什么」。
-            // 细节（探活间隔、脚本路径、方案适配）都收进代码注释与 README，
+            // 标题 + 一句说明。细节（探活间隔、脚本路径、方案适配）留在代码注释里，
             // 界面上不需要——用户要的是「装/不装」，不是实现说明。
-            Text(
-                text = "仅「被杀自动复活」需要 root，其余功能都用系统公开权限。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "Root 守护（可选）",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "仅「被杀自动复活」需要 root，其余功能都用系统公开权限。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             // 实测状态：装没装上、跑没跑起来，必须回读，不能只看按钮点过没有
             val rk = state.rootKeeper
