@@ -143,7 +143,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
             ) { open(SubPage.KeepAlive) }
         }
 
-        EditorialGroupHeader("", "架构关于")
+        EditorialGroupHeader("", "关于软件")
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(
                 text = "天元鼎 · 本地 OpenAI 兼容网关",
