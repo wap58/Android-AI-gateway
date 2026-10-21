@@ -213,10 +213,15 @@ object GatewayIntent {
     fun isExplicitlyStopped(context: Context): Boolean {
         val appContext = context.applicationContext
         val app = appContext as? AiGatewayApp
-        val state = runCatching { app?.let { KeepAlivePrefs.desiredStateOrNull(it.store) } }.getOrNull()
+        val read = runCatching { app?.let { KeepAlivePrefs.desiredStateOrNull(it.store) } }
+        // 有三态，必须分清「有过明确表态」和「从未表态」：
+        //   true/false → 用户开过/关过，直接采信
+        val state = read.getOrNull()
         if (state != null) return !state
-        // 存储读不出来（未解锁等）：退回文件标记，没有标记就当用户关过，宁可不自动开
-        return !runCatching { flagFile(appContext).exists() }.getOrDefault(false)
+        // 存储读失败（未解锁 / 数据损坏）：退回文件标记，没标记就当关过，宁可不自动开
+        if (read.isFailure) return !runCatching { flagFile(appContext).exists() }.getOrDefault(false)
+        // 从未表态（全新安装，装上还没开过）：允许后台自动开启，否则功能等于默认失效
+        return false
     }
 
     /**

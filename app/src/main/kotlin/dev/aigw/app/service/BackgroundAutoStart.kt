@@ -42,7 +42,7 @@ object BackgroundAutoStart {
     fun install(app: Application) {
         if (installed) return
         installed = true
-        val application = app.applicationContext as Application
+        val application = app.applicationContext
         // 进程可能在后台被创建（服务/磁贴拉起），此时先排一次队：
         // 若前台从未出现过，等待期内用户打开应用就会被取消，不会误触发。
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
