@@ -252,7 +252,9 @@ object GatewayIntent {
                 // ★ 放在这里是为了避开主线程：settings() 要解密存储，调用方
                 //   （服务 onStartCommand、磁贴点击）都在主线程，直接读就是一次掉帧。
                 val port = runCatching { app.engine?.settings()?.port ?: 0 }.getOrDefault(0)
-                runCatching { dev.aigw.app.service.RootKeeper.syncState(running, port) }
+                val autoStart = runCatching { KeepAlivePrefs.autoStartEnabled(app.store) }
+                    .getOrDefault(true)
+                runCatching { dev.aigw.app.service.RootKeeper.syncState(running, port, autoStart) }
             }
         }
     }

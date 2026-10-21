@@ -45,8 +45,9 @@ object BackgroundAutoStart {
         // 直接用 Application 本身：applicationContext 的静态类型是 Context，
         // 传给需要 Application 的 schedule() 会编译失败
         val application: Application = app
-        // 进程可能在后台被创建（服务/磁贴拉起），此时先排一次队：
-        // 若前台从未出现过，等待期内用户打开应用就会被取消，不会误触发。
+        // 注意：只有真的出现过 Activity 并退到后台才会开始计时。
+        // 纯粹由服务/磁贴拉起的后台进程从未有过 Activity，不会触发自动开启 ——
+        // 那种场景本来就有别的机制负责（开机自启 / Root 守护）。
         app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
             override fun onActivityStarted(activity: Activity) {
                 startedCount++

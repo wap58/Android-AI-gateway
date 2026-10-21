@@ -208,7 +208,7 @@ object RootKeeper {
      * 异步、失败静默：没有 root 时守护仍能读 App 私有目录的标记文件，
      * 这里失败不影响功能，只是少了「清数据后仍记得」这一层保障。
      */
-    fun syncState(running: Boolean, port: Int = 0) {
+    fun syncState(running: Boolean, port: Int = 0, autoStart: Boolean = true) {
         // ★ 收敛到单线程串行执行 + 只写最后一次意图：
         // 之前每次调用都起一个新线程，快速「开关」几次会出现
         // off 先落地、on 后落地的倒序写入，最终状态和用户看到的不一致。
@@ -220,7 +220,16 @@ object RootKeeper {
                 // 端口一起下发：端口是用户可改的运行时配置，脚本若写死 8877，
                 // 用户改成 9000 后探活永远失败 —— 守护会一直把「活着的网关」当死的拉，
                 // 界面还显示「探活通道不可用」，看起来像 root 环境坏了。
-                val value = if (want) "on${if (port > 0) " $port" else ""}" else "off"
+                // 三段：状态 / 端口 / 是否允许开机恢复。
+                // autoStart 也一起下发，否则用户关掉「开机自启」后，
+                // Magisk/KSU 的 service.d 里的守护仍会按 state=on 把网关拉起来，
+                // 界面显示「已关闭」而网关在跑，两套策略互相打脸。
+                val value = if (want) {
+                    "on ${if (port > 0) port.toString() else ""} ${if (autoStart) 1 else 0}"
+                        .replace("  ", " ")
+                } else {
+                    "off"
+                }
                 runRoot("echo '$value' > $STATE_PATH && chmod 644 $STATE_PATH")
             }
         }

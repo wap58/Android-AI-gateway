@@ -79,6 +79,10 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
     // 查询走 IO 线程、每次只起几个短命令，3 秒间隔对系统负担可忽略。
     LaunchedEffect(Unit) {
         while (true) {
+            // running 顺带刷一下：用户可能刚用控制中心磁贴停/开了网关，
+            // 本页的「当前服务未启动」提示与悬浮窗联动文字要跟着变。
+            // 只读 engine.isRunning()（内存标志），零成本。
+            viewModel.refreshRunning()
             viewModel.refreshRootKeeperState()
             kotlinx.coroutines.delay(3_000)
         }

@@ -893,7 +893,16 @@ class AppViewModel(
 
     fun setAutoStart(enabled: Boolean) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { dev.aigw.app.data.KeepAlivePrefs.setAutoStartEnabled(engine.store(), enabled) }
+            withContext(Dispatchers.IO) {
+                dev.aigw.app.data.KeepAlivePrefs.setAutoStartEnabled(engine.store(), enabled)
+                // 立刻把新开关下发给守护脚本：否则要等下次启停网关才会写到 state 里，
+                // 期间守护仍按旧值决定要不要在开机时拉起。
+                val port = runCatching { engine.settings().port }.getOrDefault(0)
+                val running = engine.isRunning()
+                runCatching {
+                    dev.aigw.app.service.RootKeeper.syncState(running, port, enabled)
+                }
+            }
             notice(if (enabled) "开机自启已开启（需系统自启动白名单放行）" else "开机自启已关闭")
             refresh()
         }
@@ -979,6 +988,14 @@ class AppViewModel(
                 else v.registeredDirs.joinToString("、")
             )
             if (v.logTail.isNotEmpty()) append("\n最近日志：").append(v.logTail.take(200))
+        }
+    }
+
+    /** 只刷新「网关是否在运行」这一个字段（磁贴/守护可能在后台改了它）。 */
+    fun refreshRunning() {
+        val running = runCatching { engine.isRunning() }.getOrDefault(_state.value.running)
+        if (running != _state.value.running) {
+            _state.value = _state.value.copy(running = running)
         }
     }
 
@@ -1855,7 +1872,7 @@ class AppViewModel(
         // 每轮新下载都取代旧的轮询（旧协程可能因镜像失败已 return，这里再兜一次）
         downloadWatchJob?.cancel()
         downloadWatchJob = viewModelScope.launch {
-            repeat(600) {  // 最多等 10 分钟（每 2 秒一次）
+            repeat(600) {  // 600 × 2s = 最多等 20 分钟（大包在慢网下需要）
                 delay(2_000)
                 when (val st = dev.aigw.app.update.ApkUpdater.downloadState(app)) {
                     dev.aigw.app.update.ApkUpdater.DownloadState.Done -> {

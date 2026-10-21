@@ -28,7 +28,7 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.1"
+VER="2026-10-22.3"
 PORT=8877
 INTERVAL=5
 BOOT_WAIT=20
@@ -152,7 +152,9 @@ alive() {
   # 4) ★ 万能兜底：内核 TCP 表里端口是否 LISTEN。
   #    不验证 HTTP 应答（极端情况下会误判为「活着」），但能彻底避免
   #    「工具全缺失 → 探活恒死 → 无限拉起」这种灾难性误判。
-  if _port_listening; then probe_changed "/proc/net/tcp"; return 0; fi
+  # 只在应用进程存在时才采信端口兜底：
+  # 否则别的 App 恰好占了同一端口时会把「网关已死」判成「活着」，永远不拉起。
+  if _port_listening && app_running; then probe_changed "/proc/net/tcp"; return 0; fi
 
   # 5) 最后再试 /dev/tcp（仅 bash/ksh 支持，mksh 上会直接失败，无害）
   (echo > /dev/tcp/127.0.0.1/$PORT) >/dev/null 2>&1 && { probe_changed "/dev/tcp"; return 0; }
@@ -217,7 +219,18 @@ kick() {
   out=$(am start-foreground-service -n "$SVC" 2>&1)
   case "$out" in
     *"Starting service"*|*"started"*) : ;;
-    *) log "am 输出：$(echo "$out" | tr '\n' ' ' | cut -c1-200)" ;;
+    *)
+      log "am 输出：$(echo "$out" | tr '\n' ' ' | cut -c1-200)"
+      # Android 12+ 从后台起前台服务会被拦（部分 ROM 连 su 身份也拦）。
+      # 此时退一步用普通 start-service：GatewayService 里会尽力 startForeground，
+      # 拿不到前台身份也照样 engine.start()，端口一样能活。
+      case "$out" in
+        *"Background start not allowed"*|*"ForegroundServiceStartNotAllowed"*|*"not allowed to start"*)
+          log "前台服务被系统拦截，降级为普通服务启动"
+          am start-service -n "$SVC" >/dev/null 2>&1
+          ;;
+      esac
+      ;;
   esac
 
   i=0
@@ -258,13 +271,17 @@ kick() {
 # ---------------------------------------------------------- 端口
 # state 文件格式："on 8877" / "off"，第二段是网关端口（用户可在 App 里改）。
 # 读不到就沿用脚本里的默认值。
+# state 格式："on <端口> <开机恢复 0|1>" / "off"
+AUTOSTART=1
 if [ -f "$STATE" ]; then
   _p=$(cat "$STATE" 2>/dev/null | tr -d '\r' | cut -d' ' -f2)
   case "$_p" in
     ''|*[!0-9]*) : ;;
     *) PORT="$_p" ;;
   esac
-  unset _p
+  _a=$(cat "$STATE" 2>/dev/null | tr -d '\r' | cut -d' ' -f3)
+  [ "$_a" = "0" ] && AUTOSTART=0
+  unset _p _a
 fi
 PORT_HEX=$(printf '%04X' "$PORT")
 
@@ -292,10 +309,14 @@ fi
 
 FAIL=0
 IDLE_LOGGED=0
+# 用户关掉了「开机自启」时：只在本次开机里「见过网关活着」之后才负责复活。
+# 这样语义才对 —— 关掉的是「开机自动开」，不是「被杀后不复活」。
+SEEN_ALIVE=0
 while true; do
   if alive; then
     FAIL=0
     IDLE_LOGGED=0
+    SEEN_ALIVE=1
     sleep "$INTERVAL"
     continue
   fi
@@ -313,6 +334,13 @@ while true; do
     continue
   fi
   IDLE_LOGGED=0
+
+  # 关掉了开机自启、且本次开机还没见它活过 -> 开机阶段不主动拉起
+  if [ "$AUTOSTART" -eq 0 ] && [ "$SEEN_ALIVE" -eq 0 ]; then
+    [ "$IDLE_LOGGED" -eq 0 ] && log "开机自启已关闭，本次开机未见网关运行，守护待命" && IDLE_LOGGED=1
+    sleep "$INTERVAL"
+    continue
+  fi
 
   if ! app_running; then
     log "应用进程不存在，网关必然不通 -> 立即拉起"

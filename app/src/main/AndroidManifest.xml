@@ -64,9 +64,13 @@
           ${applicationId}.shizuku（写成 applicationId 而非硬编码包名，debug 包也能用）。
         -->
         <!--
-          应用内更新：把缓存目录里的 APK 以 content:// 交给系统安装器。
-          authorities 必须用 ${applicationId} 而不是硬编码包名，
-          否则 debug 包（带 .debug 后缀）会因签名/权限不一致而失败。
+          备用通道：把应用私有目录里的文件以 content:// 交给外部应用。
+
+          当前的应用内更新**不走它** —— 下载交给系统 DownloadManager，落地在公共
+          Download/TYD，再用 getUriForDownloadedFile() 拿系统托管的 content:// URI
+          交给安装器（这样 App 被杀也能继续下载，也不用暴露自己的目录）。
+          保留声明是为了将来需要从私有目录导出文件时有现成的 provider；
+          authorities 用 ${applicationId}，debug 包才不会因包名后缀对不上而崩。
         -->
         <provider
             android:name="androidx.core.content.FileProvider"
