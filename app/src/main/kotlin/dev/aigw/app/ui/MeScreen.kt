@@ -48,14 +48,14 @@ import java.util.Locale
 @Composable
 fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit) {
     val context = LocalContext.current
-    // 点标题「我的」弹出作者信息
+    // 点标题弹出作者信息
     var showAbout by remember { mutableStateOf(false) }
     if (showAbout) {
         AboutDialog(onDismiss = { showAbout = false })
     }
 
     PageScaffold(
-        title = "我的",
+        title = "设置",
         subtitle = "网关与偏好设置",
         onTitleClick = { showAbout = true },
     ) {
@@ -156,7 +156,7 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             // 版本号整行可点：软件更新相关的条目（检查更新 / 项目地址 / 自动检查 / 更新通道）
-            // 全部收进了独立页面，这里只留一个入口，避免「我的」页底部被切得很碎。
+            // 全部收进了独立页面，这里只留一个入口，避免「设置」页底部被切得很碎。
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -309,7 +309,7 @@ private fun appVersion(context: android.content.Context): String = runCatching {
     "${display.ifEmpty { "—" }}（build $code）"
 }.getOrDefault("—")
 
-/** 点「我的」标题弹出的作者信息：两行居中，点任意处关闭。 */
+/** 点标题弹出的作者信息：两行居中，点任意处关闭。 */
 @Composable
 private fun AboutDialog(onDismiss: () -> Unit) {
     AlertDialog(

@@ -1,6 +1,6 @@
 package dev.aigw.app.ui
 
-/** 「我的」页里可进入的二级页面。 */
+/** 「设置」页里可进入的二级页面。 */
 sealed interface SubPage {
     /** 某个供应商的详情（账号、登录、专属设置）。 */
     data class ProviderDetail(val providerId: String) : SubPage
@@ -39,6 +39,6 @@ sealed interface SubPage {
     /** 模型列表：从供应商页顶栏右侧进入（底栏已不设独立入口）。 */
     data object Models : SubPage
 
-    /** 软件更新：版本、更新通道与下载（从「我的 → 关于软件」的版本号进入）。 */
+    /** 软件更新：版本、更新通道与下载（从「设置 → 关于软件」的版本号进入）。 */
     data object Update : SubPage
 }
