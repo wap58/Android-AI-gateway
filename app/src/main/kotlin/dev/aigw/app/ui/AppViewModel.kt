@@ -452,13 +452,25 @@ class AppViewModel(
         engine.setStartupDataReadyListener { refresh() }
         // 模型目录先回填上次的快照：进程重启后不再是一片空白，
         // 之后由 ensureModelsLoaded / 手动刷新去更新（到货逐组替换）。
+        //
+        // ★ 快照为空（首次使用 / 重装清过数据）时自动拉一次：
+        //   否则首页「聚合模型」会一直是 0，用户以为功能坏了，
+        //   必须先进模型页才会触发 —— 这个交互太隐蔽。
         viewModelScope.launch {
             val cached = withContext(Dispatchers.IO) {
                 runCatching { ModelSnapshotStore.load(engine.store()) }.getOrDefault(emptyList())
             }
             if (cached.isNotEmpty() && _state.value.models.isEmpty()) {
                 _state.value = _state.value.copy(models = cached)
+                // 有快照也仍然重拉一次（静默）：快照可能已经过时
+                refreshModels(silent = true)
+                return@launch
             }
+            // 无快照：稍等账号池就绪再拉（没账号时拉了也是空，白打一轮上游）。
+            // 不用 setStartupDataReadyListener —— 那是个单值字段，重复注册会覆盖
+            // 上面那个负责刷新统计的监听器，导致调用记录不再更新。
+            kotlinx.coroutines.delay(1_500)
+            ensureModelsLoaded()
         }
         refresh()
         // 自动检查更新：默认开启，每天最多一次，失败静默
@@ -636,7 +648,7 @@ class AppViewModel(
             // 全量成功后落盘快照：下次冷启动直接有内容可用
             if (catalog.models.isNotEmpty()) {
                 withContext(Dispatchers.IO) {
-                    runCatching { ModelSnapshotStore.save(engine.store(), catalog.models) }
+                    runCatching { ModelSnapshotStore.save(engine.store(), catalog.models, force = true) }
                 }
             }
             // 清名单要读写加密存储（同步落盘），放到 IO 线程，避免主线程卡帧
@@ -681,17 +693,25 @@ class AppViewModel(
         if (modelsFetchedAt == 0L || _state.value.models.isEmpty()) refreshModels()
     }
 
-    /** 流式增量：把一个供应商就绪的目录合并进 state（已在主线程串行执行，替换该供应商旧条目）。 */
+    /**
+     * 流式增量：把一个供应商就绪的目录合并进 state（已在主线程串行执行，替换该供应商旧条目）。
+     *
+     * 顺带落盘快照：某个供应商超时会让整轮等不到「全部完成」，那样一条都不存，
+     * 下次启动又是空的。这里到货即存，保证「有多少存多少」。
+     */
     private fun applyModelsChunk(chunk: ProviderModelsChunk) {
         val current = _state.value
         val states = current.modelLoadStates.toMutableMap()
         val failure = chunk.error
         states[chunk.providerId] =
             if (failure != null) ModelLoadState.Failed(failure) else ModelLoadState.Done(chunk.models.size)
-        _state.value = current.copy(
-            models = current.models.filter { it.providerId != chunk.providerId } + chunk.models,
-            modelLoadStates = states,
-        )
+        val merged = current.models.filter { it.providerId != chunk.providerId } + chunk.models
+        _state.value = current.copy(models = merged, modelLoadStates = states)
+        if (chunk.models.isNotEmpty()) {
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { ModelSnapshotStore.save(engine.store(), merged) }
+            }
+        }
     }
 
     /** 对指定模型执行一次轻量连通性与延迟探测。 */

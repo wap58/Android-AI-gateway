@@ -43,8 +43,22 @@ object ModelSnapshotStore {
 
     private val gson = Gson()
 
-    fun save(store: KeyValueStore, models: List<RoutedModel>) {
+    /** 上次真正落盘的时间与条数，用于节流（chunk 到货很密集）。 */
+    private var lastSaveAt = 0L
+    private var lastSaveCount = -1
+
+    /**
+     * 保存快照。
+     *
+     * [force] 为 false 时做节流：3 秒内且条数没明显变化就跳过。
+     * 加密存储的 write 是「全量重加密 + fsync」，流式加载时每个供应商都写一次会很重。
+     */
+    fun save(store: KeyValueStore, models: List<RoutedModel>, force: Boolean = false) {
         if (models.isEmpty()) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastSaveAt < 3_000 && models.size == lastSaveCount) return
+        lastSaveAt = now
+        lastSaveCount = models.size
         runCatching {
             val env = Envelope(
                 at = System.currentTimeMillis(),
