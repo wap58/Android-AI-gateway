@@ -805,9 +805,29 @@ class AppViewModel(
 
     // ------------------------------------------------------------------ 设置
 
+    /**
+     * 保存网关设置。
+     *
+     * ★ 端口 / 是否监听局域网这两项只在 start() 时生效：改完不重启的话，
+     * 界面和 /v1/credits 显示的是新端口，实际仍在监听旧的 ——
+     * 客户端按新端口去连必然连不上，用户只会看到「网关明明在跑却连不通」。
+     * 所以这里检测到这两项变化且网关正在运行时，自动重启一次。
+     */
     fun updateSettings(updated: GatewaySettings) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { engine.updateSettings(updated) }
+            val before = withContext(Dispatchers.IO) { engine.settings() }
+            val needRestart = before.port != updated.port || before.exposeLan != updated.exposeLan
+            val restarting = needRestart && engine.isRunning()
+            withContext(Dispatchers.IO) {
+                engine.updateSettings(updated)
+                if (restarting) {
+                    engine.stop()
+                    runCatching { engine.start() }
+                }
+            }
+            if (restarting) {
+                _state.value = _state.value.copy(notice = "设置已保存，网关已按新配置重启")
+            }
             refresh()
         }
     }
