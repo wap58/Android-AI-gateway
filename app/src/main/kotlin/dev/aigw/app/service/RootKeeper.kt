@@ -813,8 +813,14 @@ object RootKeeper {
         runRootOutput(
             // 两条路兜底：pgrep 在个别 busybox 环境里行为不一致（-f 不完全匹配 cmdline），
             // 用 ps 再过一遍，避免「明明在跑却抓不到 PID」导致卸载杀不掉。
+            //
+            // ★ ps 这一路必须同样锚定行尾（正则 `sh$`）：探针会以
+            //   `sh /data/adb/tyd/tyd_keepalive.sh probe` 启动，而 App 每 3 秒调一次自检，
+            //   不锚定时会把这些一次性进程当成守护 —— 界面上的 PID 就会「一秒一变」，
+            //   而且卸载时会去 kill 一个已经不存在的短命进程。
             "pgrep -f '$SCRIPT_NAME\$' 2>/dev/null; " +
-                "ps -A -o PID,ARGS 2>/dev/null | grep -F '$SCRIPT_NAME' | grep -v grep | awk '{print \$1}'",
+                "ps -A -o PID,ARGS 2>/dev/null | grep -F '$SCRIPT_NAME' | grep -v grep " +
+                "| grep -E '$SCRIPT_NAME\$' | awk '{print \$1}'",
         )
             .lineSequence()
             .map { it.trim() }

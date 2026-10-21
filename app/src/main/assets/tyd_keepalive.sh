@@ -28,7 +28,7 @@ PKG="dev.tyd.app"
 SVC="dev.tyd.app/dev.aigw.app.service.GatewayService"
 # 脚本版本：App 用它与 assets 里的版本比对，不一致时提示「重装」。
 # 改脚本逻辑务必同步改这一行，否则用户装的新 APK 仍在跑旧脚本。
-VER="2026-10-22.9"
+VER="2026-10-22.10"
 PORT=8877
 # 探活间隔（秒）。60 秒足够：这层守护只是兜底，网关平时由前台服务/系统保活。
 # 拉太密只是白白耗电 —— 每轮要起 curl + 读 /proc，一分钟一次已经能接受。
@@ -49,6 +49,14 @@ FLAG="$FLAG_DIR/gateway_on.flag"
 # 静默标志：probe 模式（App 自检，3 秒一次）不能写日志
 QUIET=0
 
+# 锁目录（单实例用）。定义得早，因为 tick_sleep 也要用它判断归属。
+LOCK_DIR=/data/adb/tyd/daemon.lock
+
+# 本进程是否仍持有锁。定义在两个调用点之前（shell 函数必须先定义后使用）。
+lock_owned() {
+  [ -f "$LOCK_DIR/pid" ] && [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" = "$$" ]
+}
+
 # 分段等待：期间持续检查「该不该退出」，让卸载/停用能秒级响应。
 # 返回 0 = 正常等满；1 = 收到退出信号（调用方应立刻结束主循环）。
 tick_sleep() {
@@ -57,6 +65,11 @@ tick_sleep() {
     # 卸载/停用标记：脚本被删或 disabled 文件出现就立刻退出
     if [ ! -f "$0" ] || [ -f "$BASE_DIR/disabled" ]; then
       return 1
+    fi
+    # 锁不属于自己了（被新的实例接管，或锁文件被删）：本实例应当退出，
+    # 否则会出现「两个守护同时在跑、PID 不断跳」的乱象。
+    if ! lock_owned; then
+      return 2
     fi
     if [ "$_left" -gt "$TICK" ]; then sleep "$TICK"; _left=$((_left - TICK));
     else sleep "$_left"; _left=0; fi
@@ -328,7 +341,6 @@ fi
 #   互相抢着 am start-foreground-service（日志里连续三行「守护启动」就是这个）。
 #   mkdir 是原子的，谁先建目录谁留下，其余立刻退出。
 mkdir -p /data/adb/tyd 2>/dev/null
-LOCK_DIR=/data/adb/tyd/daemon.lock
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   _old=$(cat "$LOCK_DIR/pid" 2>/dev/null)
   if [ -n "$_old" ] && kill -0 "$_old" 2>/dev/null; then
@@ -340,13 +352,13 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   mkdir "$LOCK_DIR" 2>/dev/null || exit 0
 fi
 echo $$ > "$LOCK_DIR/pid"
+# 注意：lock_owned 定义在文件前面（tick_sleep 也要用它）。
 # 无论怎么退出都释放锁，否则下一次起来会被自己的残留锁挡住
-# 退出时释放锁。
+# 退出时释放锁（只释放自己持有的那把）。
 # ★ trap 里必须显式 exit：只写 `rm -rf` 的话，收到 TERM/INT 后进程只是删了个锁，
 #   主循环继续转 —— 表现就是「kill 了还在跑」，卸载时删完目录又被它踩回来。
-#   （实测确认过：不加 exit 时 terminate 后 5 秒进程仍然存活。）
-trap 'rm -rf "$LOCK_DIR" 2>/dev/null; exit 0' INT TERM HUP
-trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
+trap 'lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null; exit 0' INT TERM HUP
+trap 'lock_owned && rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
 
 # ---------------------------------------------------------- 主循环
 log "=== 守护启动 v$VER (pid $$) 状态=$( [ -f "$STATE" ] && cat "$STATE" || echo 未记录 ) 端口=$PORT ==="
@@ -376,7 +388,7 @@ while true; do
     FAIL=0
     IDLE_LOGGED=0
     SEEN_ALIVE=1
-    tick_sleep "$INTERVAL" || { log "收到卸载/停用标记，守护退出"; exit 0; }
+    tick_sleep "$INTERVAL" || { _r=$?; [ "$_r" -eq 2 ] || log "收到卸载/停用标记，守护退出"; exit 0; }
     continue
   fi
 

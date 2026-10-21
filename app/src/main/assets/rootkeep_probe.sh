@@ -83,6 +83,7 @@ echo "DIR=$DIRS"
 echo "WORKDIR=$(ls -1 /data/adb/tyd 2>/dev/null | tr '\n' ' ')"
 
 # ---- 守护实例数：>1 说明单实例锁没生效，正常应恒为 1（0 表示没在跑）
+# 只数真正的守护（cmdline 以脚本名结尾），排除 `sh ... probe` 这种一次性进程
 echo "INSTANCES=$(pgrep -f 'tyd_keepalive.sh\$' 2>/dev/null | wc -l | tr -d ' ')"
 
 exit 0
