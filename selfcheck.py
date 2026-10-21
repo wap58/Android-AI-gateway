@@ -183,6 +183,47 @@ def check_refs(members, fq):
             )
 
 
+def check_cross_package_usage(fq):
+    """跨包使用但没 import 的顶层声明。
+
+    Kotlin 同包声明不需要 import；跨包才需要。之前 MainActivity 用了
+    `UpdateScreen`（ui 包）却没 import，编译期才炸 —— 这一项就是抓这种。
+    只对**可唯一确定归属**的名字报错：同名声明分散在多个包里时跳过，避免误报。
+    """
+    by_simple = {}
+    for name, path in fq.items():
+        simple = name.rsplit(".", 1)[-1]
+        by_simple.setdefault(simple, []).append(name)
+
+    for path in kt_files():
+        raw = open(path, encoding="utf-8").read()
+        code = strip_code(raw)
+        pkg_match = PACKAGE_RE.search(raw)
+        pkg = pkg_match.group(1) if pkg_match else ""
+        imported = set(re.findall(r"^import\s+([\w.]+)", raw, re.M))
+        imported_simple = {n.rsplit(".", 1)[-1] for n in imported}
+        for simple, fqns in by_simple.items():
+            if len(fqns) != 1:
+                continue
+            # 只查类型名（大写开头）：顶层函数/属性的同名变量极容易误报
+            if not simple[:1].isupper():
+                continue
+            fqn = fqns[0]
+            owner_pkg = fqn.rsplit(".", 1)[0] if "." in fqn else ""
+            if owner_pkg == pkg:
+                continue  # 同包，无需 import
+            if simple in imported_simple:
+                continue
+            if not re.search(r"(?<![\w.])" + re.escape(simple) + r"(?![\w])", code):
+                continue
+            # 本文件自己声明了同名类型则豁免
+            if re.search(r"\b(?:object|class|interface|fun|val)\s+" + re.escape(simple) + r"\b", code):
+                continue
+            errors.append(
+                f"{os.path.relpath(path, ROOT)} 用到 {fqn}，但缺少 import"
+            )
+
+
 def check_imports(fq):
     for path in kt_files():
         raw = open(path, encoding="utf-8").read()
@@ -227,6 +268,7 @@ def main():
         check_dup_fun(path, raw)
     check_refs(members, fq)
     check_imports(fq)
+    check_cross_package_usage(fq)
 
     for w in warnings:
         print("WARN ", w)

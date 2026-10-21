@@ -72,6 +72,7 @@ import dev.aigw.app.ui.ProxyScreen
 import dev.aigw.app.ui.ResilienceScreen
 import dev.aigw.app.ui.SecurityProtectionScreen
 import dev.aigw.app.ui.SubPage
+import dev.aigw.app.ui.UpdateScreen
 import dev.aigw.app.ui.TaskCenterScreen
 import dev.aigw.app.ui.UsageScreen
 import dev.aigw.app.ui.providers.ProviderUiRegistry
