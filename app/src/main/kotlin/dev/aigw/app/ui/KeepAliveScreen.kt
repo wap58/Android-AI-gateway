@@ -261,21 +261,11 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
         // 用户既做不了什么，也看不懂为什么全是叉。
         // 首次进入时 rootKeeper 还是 null（尚未探测），此时先不渲染，探测完再决定显隐。
         if (state.rootKeeper?.suAvailable == true) SectionCard(enterIndex = 5) {
-            // 标题已写明「可选」，不再单挂一个「需 ROOT」红标（与文案重复且抢占视线）
-            Column(Modifier.fillMaxWidth()) {
-                Text("Root 守护（可选）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text(
-                    text = "本应用自身全部功能都不需要 root：悬浮窗、开机自启、隐藏多任务走的是系统公开权限。" +
-                        "只有「被杀自动复活」这一层需要 root，点下面的按钮即可一键安装，无需手动操作。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            // 只留一句必要说明：解释「为什么需要 root」和「它做什么」。
+            // 细节（探活间隔、脚本路径、方案适配）都收进代码注释与 README，
+            // 界面上不需要——用户要的是「装/不装」，不是实现说明。
             Text(
-                text = "守护脚本每 60 秒探活一次 http://127.0.0.1:${state.port}/healthz：进程没了立刻拉起，" +
-                    "进程在但端口不通连续 2 次就重启；期望状态持久化在 /data/adb/tyd/，重启后照样恢复。" +
-                    "脚本固定放在 /data/adb/tyd/，一个脚本适配 Magisk / KernelSU / APatch / Sui 及纯 su，" +
-                    "不用按方案换目录。",
+                text = "仅「被杀自动复活」需要 root，其余功能都用系统公开权限。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
