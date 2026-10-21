@@ -183,7 +183,7 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     StatusFilter.entries.forEach { option ->
-                        ChoiceChip(option.label, filter == option, { filter = option })
+                        ChoiceChip(option.label, filter == option) { filter = option }
                     }
                 }
                 Text(

@@ -255,81 +255,94 @@ def check_dup_fun(path, raw):
             warnings.append(f"{os.path.relpath(path, ROOT)} fun {name} 定义 {len(lines)} 次（行 {lines}，重载则忽略）")
 
 
-def check_trailing_lambda(fq):
-    """函数签名的最后一个参数不是 lambda 时，尾随 lambda 调用会编译失败。
+def _balanced(code, open_idx, open_ch="(", close_ch=")"):
+    """从 open_idx 处的开括号起做括号匹配，返回闭括号下标（失败返回 -1）。"""
+    depth = 0
+    for i in range(open_idx, len(code)):
+        if code[i] == open_ch:
+            depth += 1
+        elif code[i] == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i
+    return -1
 
-    典型坑：给 `ChoiceChip(text, selected, onClick)` 中间插一个 `modifier`，
-    所有 `ChoiceChip(..) { ... }` 的调用点立刻全炸（本次 CI 就是这么挂的）。
-    这里找出「有尾随 lambda 调用、但被调函数最后一个参数不是函数类型」的情况。
-    """
-    # 收集项目内函数的参数列表（末尾参数是否函数类型）。
-    # 参数串必须做括号匹配后整段取出：`onClick: () -> Unit` 里的 `()` 用正则会截断。
-    def param_text(code, open_paren):
-        depth = 0
-        for i in range(open_paren, len(code)):
-            if code[i] == "(":
-                depth += 1
-            elif code[i] == ")":
-                depth -= 1
-                if depth == 0:
-                    return code[open_paren + 1:i]
-        return ""
 
-    def split_params(text):
-        parts, depth, cur = [], 0, []
-        for ch in text:
-            if ch in "([<{":
-                depth += 1
-            elif ch in ")]>}":
-                depth -= 1
-            if ch == "," and depth == 0:
-                parts.append("".join(cur).strip())
-                cur = []
-            else:
-                cur.append(ch)
-        if "".join(cur).strip():
+def _split_args(text):
+    parts, depth, cur = [], 0, []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        if ch == "," and depth == 0:
             parts.append("".join(cur).strip())
-        return parts
+            cur = []
+        else:
+            cur.append(ch)
+    if "".join(cur).strip():
+        parts.append("".join(cur).strip())
+    return parts
 
+
+def check_call_arg_types(fq):
+    """位置实参传给「类型不匹配的参数」——编译器才报，沙箱里没有编译器。
+
+    真实踩坑：给 `ChoiceChip(text, selected, onClick)` 中间插入 `modifier` 后，
+    `ChoiceChip(a, b, { ... })` 这种**位置传参**会把 lambda 塞进 Modifier 参数，
+    编译失败；而尾随 lambda 写法 `ChoiceChip(a, b) { ... }` 却是正确的。
+    这里对「实参是 lambda、而对应形参不是函数类型」的情况报错。
+    """
     sig = {}
     for path in kt_files():
         raw = open(path, encoding="utf-8").read()
         code = strip_code(raw)
         for m in re.finditer(r"fun\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", code):
-            params = split_params(param_text(code, m.end() - 1))
-            if not params:
+            close = _balanced(code, m.end() - 1)
+            if close < 0:
                 continue
-            sig.setdefault(m.group(1), bool(re.search(r"->|\bFunction\d?\b", params[-1])))
+            params = [p for p in _split_args(code[m.end():close]) if p]
+            types = []
+            for p in params:
+                # 形参形如 `name: Type = default` / `@Ann name: Type`
+                if ":" in p:
+                    types.append(p.split(":", 1)[1].split("=")[0].strip())
+                else:
+                    types.append("")
+            sig.setdefault(m.group(1), types)
 
     for path in kt_files():
         raw = open(path, encoding="utf-8").read()
         code = strip_code(raw)
-        for name, takes_block in sig.items():
-            if takes_block:
+        for name, types in sig.items():
+            if not types:
                 continue
-            # 只查首字母大写的（Composable 组件命名约定）。
-            # 小写函数同名于标准库（require / configure / replaceAllSafe …）时误报率极高，
-            # 而真正会在大范围调用点炸掉的正是这些 UI 组件签名变更。
-            if not name[:1].isupper():
-                continue
-            # 参数表允许换行（多数组件调用是多行的），但限长避免跨语句误判
-            pattern = (
-                r"(?<![\w.])" + re.escape(name)
-                + r"\s*\([^()]{0,400}(?:\([^()]{0,200}\)[^()]{0,400}){0,4}\)\s*\{"
-            )
-            for m in re.finditer(pattern, code):
-                # 跳过函数声明本身：`fun name(...) {` 的花括号是函数体，不是尾随 lambda
-                prefix = code[max(0, m.start() - 8):m.start()]
-                if re.search(r"fun\s+$", prefix):
+            for m in re.finditer(r"(?<![\w.])" + re.escape(name) + r"\s*\(", code):
+                # 跳过声明本身
+                head = code[max(0, m.start() - 24):m.start()]
+                if re.search(r"\bfun\s+$", head):
                     continue
-                # 跳过局部函数/方法声明（可能带修饰符）
-                if re.search(r"\bfun\s+$", code[max(0, m.start() - 16):m.start()]):
+                close = _balanced(code, m.end() - 1)
+                if close < 0:
                     continue
-                line = code[:m.start()].count("\n") + 1
-                errors.append(
-                    f"{os.path.relpath(path, ROOT)}:{line} 对 {name}() 用了尾随 lambda，"
-                    f"但它的最后一个参数不是函数类型（参数顺序有问题）"
-                )
+                args = [a for a in _split_args(code[m.end():close]) if a]
+                for i, arg in enumerate(args):
+                    if i >= len(types):
+                        break
+                    # 命名实参不占位置
+                    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*=(?!=)", arg):
+                        break
+                    is_lambda = arg.startswith("{") or (arg.startswith("fun(") )
+                    if not is_lambda:
+                        continue
+                    t = types[i]
+                    if "->" in t or re.search(r"\bFunction\d?\b", t):
+                        continue
+                    line = code[:m.start()].count("\n") + 1
+                    errors.append(
+                        f"{os.path.relpath(path, ROOT)}:{line} {name}() 第 {i + 1} 个位置实参是 lambda，"
+                        f"但形参类型是「{t}」"
+                    )
 
 
 def main():
@@ -346,7 +359,7 @@ def main():
     check_refs(members, fq)
     check_imports(fq)
     check_cross_package_usage(fq)
-    check_trailing_lambda(fq)
+    check_call_arg_types(fq)
 
     for w in warnings:
         print("WARN ", w)
