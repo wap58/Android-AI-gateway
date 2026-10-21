@@ -16,6 +16,7 @@ import com.google.gson.JsonParser
 import dev.aigw.app.data.GatewayIntent
 import dev.aigw.app.data.KeepAlive
 import dev.aigw.app.data.KeepAliveStatus
+import dev.aigw.app.data.ModelSnapshotStore
 import dev.aigw.app.gatewayEngine
 import dev.aigw.app.ui.theme.ThemeMode
 import dev.aigw.app.ui.theme.defaultAppColors
@@ -413,6 +414,16 @@ class AppViewModel(
         }
         // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
         engine.setStartupDataReadyListener { refresh() }
+        // 模型目录先回填上次的快照：进程重启后不再是一片空白，
+        // 之后由 ensureModelsLoaded / 手动刷新去更新（到货逐组替换）。
+        viewModelScope.launch {
+            val cached = withContext(Dispatchers.IO) {
+                runCatching { ModelSnapshotStore.load(engine.store()) }.getOrDefault(emptyList())
+            }
+            if (cached.isNotEmpty() && _state.value.models.isEmpty()) {
+                _state.value = _state.value.copy(models = cached)
+            }
+        }
         refresh()
         // 自动检查更新：默认开启，每天最多一次，失败静默
         maybeAutoCheckUpdate()
@@ -562,14 +573,34 @@ class AppViewModel(
                 )
             }
             if (gen != modelsGeneration) return@launch
-            // 全部完成后用最终聚合覆盖：失败供应商的旧条目随之清除（与整体刷新语义一致）
+            // 全部完成后用最终聚合覆盖：失败供应商的旧条目随之清除（与整体刷新语义一致）。
+            // ★ 唯一的例外：整轮结果为空时不能覆盖 —— 那多半是全部供应商都失败（无账号、
+            //   上游故障、断网），覆盖等于把界面上原有的目录（含冷启动回填的快照）清成 0 个，
+            //   用户看到的就是「模型列表空了」。此时保留旧列表，只报错。
             val providerError = catalog.failures.entries.joinToString("；") { "${it.key}：${it.value}" }
+            val keepOld = catalog.models.isEmpty()
+            if (keepOld) {
+                _state.value = _state.value.copy(
+                    modelsLoading = false,
+                    modelsError = listOf(error, providerError).filter { it.isNotEmpty() }
+                        .joinToString("；").ifEmpty { "本次没有取到任何模型，先显示上次的列表" },
+                    busy = if (quiet) _state.value.busy else "",
+                )
+                pruneStaleExposure(catalog.models)
+                return@launch
+            }
             _state.value = _state.value.copy(
                 models = catalog.models,
                 modelsLoading = false,
                 modelsError = listOf(error, providerError).filter { it.isNotEmpty() }.joinToString("；"),
                 busy = if (quiet) _state.value.busy else "",
             )
+            // 全量成功后落盘快照：下次冷启动直接有内容可用
+            if (catalog.models.isNotEmpty()) {
+                withContext(Dispatchers.IO) {
+                    runCatching { ModelSnapshotStore.save(engine.store(), catalog.models) }
+                }
+            }
             // 清名单要读写加密存储（同步落盘），放到 IO 线程，避免主线程卡帧
             pruneStaleExposure(catalog.models)
         }
@@ -602,7 +633,14 @@ class AppViewModel(
      * 模型目录只在「首次进入模型页」与「手动刷新」时更新，避免每次切页都打上游。
      */
     fun ensureModelsLoaded() {
-        if (modelsFetchedAt == 0L) refreshModels()
+        // 正在拉的时候不要叠加：模型页每次进入都会调本方法，连点几下会同时起多轮
+        if (_state.value.modelsLoading) return
+        // 两条触发条件缺一不可：
+        //   1. 本次进程还没拉过（modelsFetchedAt == 0）
+        //   2. 列表为空 —— 上一轮可能整体失败（无账号、上游故障、超时），
+        //      此时 modelsFetchedAt 已被置位，只靠第 1 条会导致「空着也不重拉」，
+        //      用户必须手动点刷新，看上去就是「模型列表空了」。
+        if (modelsFetchedAt == 0L || _state.value.models.isEmpty()) refreshModels()
     }
 
     /** 流式增量：把一个供应商就绪的目录合并进 state（已在主线程串行执行，替换该供应商旧条目）。 */

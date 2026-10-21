@@ -47,6 +47,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,6 +85,10 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
     var expanded by rememberSaveable { mutableStateOf(emptySet<String>()) }
     // 测试失败原文可能很长，行内只展示截断提示，全文点开弹窗查看
     var failureDetail by remember { mutableStateOf<String?>(null) }
+
+    // 进页面就检查一次：本次进程没拉过、或者列表是空的（上一轮整体失败 / 刚重启），
+    // 立即自动拉一次。用户不用再手动点右上角刷新，也不会看到「共 0 个」的空白页。
+    LaunchedEffect(Unit) { viewModel.ensureModelsLoaded() }
 
     // 刷新按钮旋转动效：仅在加载中才创建无限过渡，停止后不空转每帧插值
     val spinAngle = if (state.modelsLoading) {
