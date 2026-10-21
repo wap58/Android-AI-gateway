@@ -281,7 +281,7 @@ object RootKeeper {
             logTail = readLog(context).take(400),
             desiredRunning = readState(),
             suAvailable = true,
-            scriptVersion = readScriptVersion(),
+            scriptVersion = readScriptVersion(context),
             bundledVersion = bundledScriptVersion(context),
         )
     }
@@ -315,19 +315,36 @@ object RootKeeper {
         return local
     }
 
-    /** 从磁盘脚本里读 VER= 的值（正在运行的这一版）。 */
-    private fun readScriptVersion(): String {
-        val out = runRootOutput("grep -m1 '^VER=' '/data/adb/service.d/$SCRIPT_NAME' 2>/dev/null")
+    /**
+     * 磁盘上正在运行的守护脚本版本。
+     *
+     * 以 app 私有目录的副本为准（install 每次都覆盖它，重装后立即准确），
+     * 读不到再退回各框架目录里铺的那份。
+     */
+    private fun readScriptVersion(context: Context): String {
+        val local = File(context.filesDir, "rootkeep/$SCRIPT_NAME")
+        if (local.exists()) {
+            val parsed = parseVer(
+                runCatching { local.readLines().firstOrNull { it.startsWith("VER=") }.orEmpty() }
+                    .getOrDefault(""),
+            )
+            if (parsed.isNotEmpty()) return parsed
+        }
+        // 框架目录按 rootFlavor 决定，这里一并尝试已知位置
+        val out = runRootOutput(
+            "grep -m1 '^VER=' /data/adb/service.d/$SCRIPT_NAME " +
+                "/data/adb/ksu/service.d/$SCRIPT_NAME /data/adb/ap/service.d/$SCRIPT_NAME 2>/dev/null",
+        )
         return parseVer(out)
     }
 
     /** APK 内置脚本的版本（assets）。 */
-    private fun bundledScriptVersion(context: Context): String =
-        runCatching {
-            context.assets.open(SCRIPT_NAME).bufferedReader().use { r ->
-                r.readLines().firstOrNull { it.startsWith("VER=") }
-            }
-        }.let { parseVer(it ?: "") }
+    private fun bundledScriptVersion(context: Context): String {
+        val lines = runCatching {
+            context.assets.open(SCRIPT_NAME).bufferedReader().use { r -> r.readLines() }
+        }.getOrDefault(emptyList())
+        return parseVer(lines.firstOrNull { it.startsWith("VER=") }.orEmpty())
+    }
 
     private fun parseVer(line: String): String =
         line.substringAfter("VER=", "").trim().trim('"').take(40)
