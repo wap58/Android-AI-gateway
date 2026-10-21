@@ -75,6 +75,9 @@ private const val GOLD_PERSIST_DEBOUNCE_MS = 300L
 /** 项目仓库地址（GitHub）。 */
 private const val PROJECT_URL = "https://github.com/wap58/Android-AI-gateway"
 
+/** 上游原项目（本仓库是它的 fork，界面里让用户自己选去哪个）。 */
+private const val UPSTREAM_URL = "https://github.com/xibai6668/Android-AI-gateway"
+
 /** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
 private const val RELEASES_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases/latest"
 /**
@@ -1791,11 +1794,16 @@ class AppViewModel(
         _state.value = _state.value.copy(updateInfo = null)
     }
 
-    fun openProjectRepo() {
-        if (!openBrowser(PROJECT_URL)) {
+    /** 打开指定仓库地址（由「项目地址」的选择弹窗调用）。 */
+    fun openRepo(url: String) {
+        if (!openBrowser(url)) {
             _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开项目地址")
         }
     }
+
+    fun openProjectRepo() = openRepo(PROJECT_URL)
+
+    fun openUpstreamRepo() = openRepo(UPSTREAM_URL)
 
     fun openReleasePage(url: String) {
         if (!openBrowser(url)) {

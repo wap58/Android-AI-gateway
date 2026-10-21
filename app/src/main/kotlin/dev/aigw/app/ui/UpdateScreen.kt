@@ -6,11 +6,17 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,6 +34,39 @@ import dev.aigw.app.ui.theme.LocalAppColors
 @Composable
 fun UpdateScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit) {
     val context = LocalContext.current
+    // 「项目地址」有两个仓库（本 fork / 上游原项目），让用户自己选
+    var showRepoPicker by remember { mutableStateOf(false) }
+
+    if (showRepoPicker) {
+        AlertDialog(
+            onDismissRequest = { showRepoPicker = false },
+            title = { Text("打开哪个仓库？") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    RepoOption(
+                        title = "本项目（天元鼎）",
+                        detail = "当前使用的版本、更新与 Issue 都在这里",
+                        url = "github.com/wap58/Android-AI-gateway",
+                    ) {
+                        showRepoPicker = false
+                        viewModel.openProjectRepo()
+                    }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    RepoOption(
+                        title = "原项目（上游）",
+                        detail = "天元鼎基于它二次开发，功能与实现思路的源头",
+                        url = "github.com/xibai6668/Android-AI-gateway",
+                    ) {
+                        showRepoPicker = false
+                        viewModel.openUpstreamRepo()
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showRepoPicker = false }) { Text("取消") }
+            },
+        )
+    }
 
     PageScaffold(
         title = "软件更新",
@@ -69,7 +108,7 @@ fun UpdateScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit)
                 title = "项目地址",
                 subtitle = "在浏览器打开源码仓库",
                 meta = "GitHub",
-            ) { viewModel.openProjectRepo() }
+            ) { showRepoPicker = true }
         }
 
         SectionCard(enterIndex = 1) {
@@ -111,6 +150,32 @@ fun UpdateScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Unit)
                 )
             }
         }
+    }
+}
+
+/** 选择器里的一项：标题 + 说明 + 仓库地址。 */
+@Composable
+private fun RepoOption(title: String, detail: String, url: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+    ) {
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall,
+            color = LocalAppColors.current.goldStart,
+        )
+        Text(
+            text = detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = url,
+            style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
