@@ -4,6 +4,15 @@ name: Android Release
 # 本地开发一律走 debug 包（见 scripts/build.sh 与 app/build.gradle.kts 的 buildTypes.debug）。
 on:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: '发布通道：release=公开版（稳定），beta=测试版（预发布，App 内需切到测试版才能看到）'
+        required: false
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - beta
 
 permissions:
   contents: write
@@ -98,4 +107,7 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: v${{ steps.version.outputs.version }}
           body: ${{ steps.changelog.outputs.body }}
+          # 测试版标记为 prerelease：GitHub 的 /releases/latest 会自动跳过它，
+          # 公开版用户不会收到测试包；App 的「测试版」通道走列表接口才看得到。
+          prerelease: ${{ github.event.inputs.channel == 'beta' }}
           files: tianyuanding-${{ steps.version.outputs.version }}-release.apk

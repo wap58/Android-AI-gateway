@@ -155,45 +155,35 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Text(
-                text = "应用版本 ${appVersion(context)}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        EditorialRow(
-            "",
-            "检查更新",
-            "从 GitHub Releases 获取最新版本",
-            if (state.updateChecking) "检查中…" else "",
-        ) { if (!state.updateChecking) viewModel.checkUpdate() }
-
-        EditorialRow(
-            "",
-            "项目地址",
-            "在浏览器打开源码仓库",
-            "GitHub",
-        ) { viewModel.openProjectRepo() }
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text("自动检查更新", style = MaterialTheme.typography.titleSmall)
+            // 版本号整行可点：软件更新相关的条目（检查更新 / 项目地址 / 自动检查 / 更新通道）
+            // 全部收进了独立页面，这里只留一个入口，避免「我的」页底部被切得很碎。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { open(SubPage.Update) }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(
-                    "打开应用时后台检测，每天最多一次",
+                    text = "应用版本 ${appVersion(context)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "软件更新",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "→",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = LocalAppColors.current.goldStart,
                 )
             }
-            Switch(
-                checked = state.autoCheckUpdate,
-                onCheckedChange = { viewModel.setAutoCheckUpdate(it) },
-            )
         }
+
     }
 }
 

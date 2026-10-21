@@ -38,4 +38,7 @@ sealed interface SubPage {
 
     /** 模型列表：从供应商页顶栏右侧进入（底栏已不设独立入口）。 */
     data object Models : SubPage
+
+    /** 软件更新：版本、更新通道与下载（从「我的 → 架构关于」的版本号进入）。 */
+    data object Update : SubPage
 }

@@ -77,6 +77,7 @@ private const val PROJECT_URL = "https://github.com/wap58/Android-AI-gateway"
 
 /** GitHub 最新 Release 接口（API 地址；网页地址 .../releases/latest 返回 HTML，不能当 JSON 解析）。 */
 private const val RELEASES_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases/latest"
+private const val RELEASES_LIST_API = "https://api.github.com/repos/wap58/Android-AI-gateway/releases?per_page=10"
 
 /** GitHub API 要求请求带 User-Agent。 */
 private const val UPDATE_UA = "ai-gateway-android"
@@ -149,6 +150,21 @@ class AppearanceStore(private val store: KeyValueStore) {
     }
 }
 
+/** 更新通道。 */
+enum class UpdateChannel(val label: String, val detail: String) {
+    /** 公开版：只跟随正式 Release（非预发布）。 */
+    Release("公开版", "从 Release 获取，稳定可日常使用"),
+
+    /** 测试版：连预发布（prerelease）一起取，更新更勤，可能带问题。 */
+    Beta("测试版", "跟随预发布通道，更新更频繁，问题也多"),
+    ;
+
+    companion object {
+        fun parse(raw: String?): UpdateChannel =
+            if (raw == "beta") Beta else Release
+    }
+}
+
 /** 更新检查偏好与上次检查日期。 */
 class UpdateStore(private val store: KeyValueStore) {
     /** 是否自动检查更新，默认开启。 */
@@ -156,6 +172,13 @@ class UpdateStore(private val store: KeyValueStore) {
 
     fun setAutoCheck(enabled: Boolean) {
         store.write(KEY_AUTO, if (enabled) "1" else "0")
+    }
+
+    /** 更新通道，默认公开版（与既有行为一致，老用户升级后无感）。 */
+    fun channel(): UpdateChannel = UpdateChannel.parse(store.read(KEY_CHANNEL))
+
+    fun setChannel(channel: UpdateChannel) {
+        store.write(KEY_CHANNEL, if (channel == UpdateChannel.Beta) "beta" else "release")
     }
 
     /** 上次自动检查的日期（epoch day），从未检查过返回 Long.MIN_VALUE。 */
@@ -167,6 +190,7 @@ class UpdateStore(private val store: KeyValueStore) {
 
     private companion object {
         const val KEY_AUTO = "settings/update.autoCheck"
+        const val KEY_CHANNEL = "settings/update.channel"
         const val KEY_LAST = "settings/update.lastCheckEpochDay"
     }
 }
@@ -320,6 +344,8 @@ data class AppUiState(
     val updateInfo: UpdateInfo? = null,
     /** 是否自动检查更新（启动时每天最多一次）。 */
     val autoCheckUpdate: Boolean = true,
+    /** 更新通道：公开版 / 测试版。 */
+    val updateChannel: UpdateChannel = UpdateChannel.Release,
 ) {
     /** 某个供应商的账号。 */
     fun accountsOf(providerId: String): List<AccountStatus> = accounts.filter { it.providerId == providerId }
@@ -369,6 +395,7 @@ class AppViewModel(
         AppUiState(
             dynamicColor = appearance.dynamicColor(),
             autoCheckUpdate = updateStore.autoCheck(),
+            updateChannel = updateStore.channel(),
             themeMode = appearance.themeMode(),
             // 存储里的非法 HEX 一律回落到默认值，不让坏数据把界面卡死
             backgroundOverride = appearance.backgroundHex()?.let { parseHexColor(it) },
@@ -1665,6 +1692,23 @@ class AppViewModel(
         viewModelScope.launch { withContext(Dispatchers.IO) { updateStore.setAutoCheck(enabled) } }
     }
 
+    /**
+     * 切换更新通道。
+     *
+     * 切换后立刻重置「今天已检查」：否则用户在测试版通道上等到明天才会看到预发布版本，
+     * 体验像是「切了没反应」。同时清掉已弹出的更新提示，避免残留旧通道的结果。
+     */
+    fun setUpdateChannel(channel: UpdateChannel) {
+        _state.value = _state.value.copy(updateChannel = channel, updateInfo = null)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                updateStore.setChannel(channel)
+                updateStore.setLastCheckEpochDay(Long.MIN_VALUE)
+            }
+            notice("已切换到${channel.label}通道")
+        }
+    }
+
     fun dismissUpdate() {
         _state.value = _state.value.copy(updateInfo = null)
     }
@@ -1781,6 +1825,15 @@ class AppViewModel(
             if (!manual) updateStore.setLastCheckEpochDay(currentEpochDay())
             outcome.fold(
                 onSuccess = { info ->
+                    if (info.version.isEmpty()) {
+                        // 通道里还没发布过任何版本（例如测试版通道刚开）
+                        if (manual) {
+                            _state.value = _state.value.copy(
+                                notice = "已是最新版本（${installedVersionName()}）；${_state.value.updateChannel.label}通道暂无新版本",
+                            )
+                        }
+                        return@fold
+                    }
                     if (isNewer(info.version, installedVersionName())) {
                         _state.value = _state.value.copy(updateInfo = info)
                     } else if (manual) {
@@ -1797,9 +1850,17 @@ class AppViewModel(
         }
     }
 
-    /** 直连 GitHub 取最新 Release（不走代理，按用户选择）。 */
+    /**
+     * 直连 GitHub 取最新版本。
+     *
+     * 两个通道用不同接口：
+     * - 公开版：`/releases/latest`（GitHub 保证返回的是最新**非预发布**版本）
+     * - 测试版：`/releases?per_page=10` 取列表第一条（含 prerelease），
+     *   因为 `/latest` 永远跳过预发布，用它做测试通道等于永远收不到测试版。
+     */
     private fun fetchLatestRelease(): UpdateInfo {
-        val conn = (URL(RELEASES_API).openConnection() as HttpURLConnection).apply {
+        val api = if (_state.value.updateChannel == UpdateChannel.Beta) RELEASES_LIST_API else RELEASES_API
+        val conn = (URL(api).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 10_000
             readTimeout = 10_000
@@ -1811,7 +1872,25 @@ class AppViewModel(
             if (status == 404) throw IllegalStateException("暂无发布版本")
             if (status !in 200..299) throw IllegalStateException("HTTP $status")
             val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val obj = JsonParser.parseString(body).asJsonObject
+            val parsed = JsonParser.parseString(body)
+            // 列表接口返回数组，latest 返回对象：统一成对象再取字段。
+            // 列表里取「版本号最大」的那条，而不是第一条 —— 发布顺序不一定等于版本顺序
+            // （补发旧 tag、预发布与正式版交替），取第一条可能拿到比当前还旧的版本。
+            val obj = if (parsed.isJsonArray) {
+                parsed.asJsonArray
+                    .mapNotNull { runCatching { it.asJsonObject }.getOrNull() }
+                    .filter { it.get("tag_name")?.asString?.trim().orEmpty().isNotEmpty() }
+                    .maxByOrNull {
+                        it.get("tag_name")?.asString.orEmpty()
+                            .trim().removePrefix("v")
+                            .split('.', '-')
+                            .map { p -> p.toIntOrNull() ?: 0 }
+                            .let { v -> v.fold(0L) { acc, x -> acc * 1000L + x } }
+                    }
+                    ?: return UpdateInfo(version = "", url = "$PROJECT_URL/releases", notes = "")
+            } else {
+                parsed.asJsonObject
+            }
             val version = obj.get("tag_name")?.asString?.trim().orEmpty().removePrefix("v")
             if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
             val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }

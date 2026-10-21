@@ -243,6 +243,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
                 SubPage.Models -> ModelsScreen(state, viewModel) { subPage = null }
+                SubPage.Update -> UpdateScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
                     state = state,
