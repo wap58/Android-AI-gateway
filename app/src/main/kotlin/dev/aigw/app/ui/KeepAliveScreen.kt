@@ -294,11 +294,13 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                     ok = rk.processAlive,
                     text = if (rk.processAlive) "运行中（PID ${rk.pid}）" else "未运行",
                 )
+                // 直接显示守护脚本实际使用的探活通道（curl / busybox / toybox / /proc 兜底），
+                // 排障时一眼能看出用的是哪一级，不必再猜是工具缺失还是网关真死了。
                 RootStatusLine(
                     label = "探活通道",
                     ok = rk.probeWorks,
-                    text = if (rk.probeWorks) "可用（返回「${rk.probeOutput}」）"
-                    else "不可用（输出「${rk.probeOutput.ifEmpty { "空" }}」）",
+                    text = if (rk.probeWorks) "可用（${rk.probeOutput.trim()}）"
+                    else "不可用（脚本 probe 输出「${rk.probeOutput.trim().ifEmpty { "空" }}」）",
                 )
                 RootStatusLine(
                     label = "开机目录",
@@ -313,6 +315,15 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                         true -> "运行中（重启后自动恢复）"
                         false -> "已停止（守护待命，不会自己拉起）"
                         null -> "未记录（首次写入后生效）"
+                    },
+                )
+                RootStatusLine(
+                    label = "脚本版本",
+                    ok = !rk.outdated,
+                    text = when {
+                        rk.scriptVersion.isEmpty() -> "读取失败（可能未安装或权限不足）"
+                        rk.outdated -> "${rk.scriptVersion} → 需重装（APK 内置 ${rk.bundledVersion}）"
+                        else -> rk.scriptVersion
                     },
                 )
                 RootStatusLine(
@@ -350,6 +361,16 @@ fun KeepAliveScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> Un
                         )
                     }
                 }
+            }
+
+            // 脚本有更新时直接提示：否则用户装了新版 APK 却还在跑旧守护，
+            // 表现为「修好的问题又出现了」，极难自查。
+            if (rk.outdated) {
+                Text(
+                    text = "⚠ 守护脚本有更新（${rk.scriptVersion} → ${rk.bundledVersion}），点「重装」即可热替换，不必重启手机。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
 
             // 四个操作按钮固定一行：文案都是两个字（安装/重装、自检、清除、卸载），

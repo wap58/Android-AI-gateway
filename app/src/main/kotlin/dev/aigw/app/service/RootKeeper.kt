@@ -94,7 +94,16 @@ object RootKeeper {
          * 界面据此决定是否显示 Root 卡片：拿不到 root 时整块隐藏，避免一堆永远红色的未通过项。
          */
         val suAvailable: Boolean = false,
+        /** 磁盘上正在运行的守护脚本版本（脚本内 VER 变量）；空表示读取失败。 */
+        val scriptVersion: String = "",
+        /** assets 里随 APK 附带的版本；与 [scriptVersion] 不一致说明需要重装。 */
+        val bundledVersion: String = "",
     ) {
+        /** 磁盘脚本是否落后于 APK（需要用户点一次「重装」）。 */
+        val outdated: Boolean
+            get() = scriptVersion.isNotEmpty() && bundledVersion.isNotEmpty() &&
+                scriptVersion != bundledVersion
+
         val ok: Boolean get() = processAlive && probeWorks
     }
 
@@ -242,14 +251,23 @@ object RootKeeper {
                 logTail = "",
                 desiredRunning = null,
                 suAvailable = false,
+                scriptVersion = "",
+                bundledVersion = bundledScriptVersion(context),
             )
         }
         val pid = findPid()
-        // 探活：按 curl → wget → /dev/tcp 依次回退。
-        // 这条命令里没有引号、没有分号拼接，能避开 su 传参时的转义问题。
-        val probeOut = runRootOutput(probeCommand())
-        // curl 返回 "ok"，wget 同样；探测工具缺失则输出 NO_PROBE_TOOL
-        val probeWorks = probeOut.isNotBlank() && probeOut != "NO_PROBE_TOOL"
+        // 探活直接调用守护脚本自己的 probe 模式。
+        //
+        // ★ 为什么不再在 Kotlin 里另写一套判断：
+        //   之前 App 端是 `curl || wget || /dev/tcp`，而 APatch 设备上
+        //   curl 不存在、busybox 不在 PATH、/dev/tcp 是 mksh 不支持的语法 ——
+        //   三条全挂，界面报「探活通道不可用」，而守护内部用的是另一套（有 /proc 兜底）
+        //   所以它其实好好活着。两套判断不一致 → 用户看到「都有 root 了居然还没生效」。
+        //   现在两边共用同一个实现，界面显示的就是守护真实的判定依据。
+        val probeOut = runRootOutput(probeCommand(context))
+        val probeWorks = probeOut.isNotBlank() &&
+            probeOut.trim() != "FAIL" &&
+            !probeOut.contains("[err]")
         val dirs = serviceDirs().filter { dir ->
             runRootOutput("[ -f '$dir/$SCRIPT_NAME' ] && echo yes").trim() == "yes"
         }
@@ -263,20 +281,56 @@ object RootKeeper {
             logTail = readLog(context).take(400),
             desiredRunning = readState(),
             suAvailable = true,
+            scriptVersion = readScriptVersion(),
+            bundledVersion = bundledScriptVersion(context),
         )
     }
 
     /**
-     * 探活命令（curl → wget → /dev/tcp 三级回退）。
+     * 探活命令：调用守护脚本的 `probe` 模式，输出它实际用的通道名（或 FAIL）。
      *
-     * 刻意不加引号、不用 `if...fi` 嵌套：这条字符串会作为 `su 0 -c` 的单个参数送达，
-     * 多层引号容易被 su 或 shell 二次解释而失效
-     * （曾出现「su 下手动跑正常、App 里却拿到空输出」）。
+     * 用 `sh <脚本> probe` 而不是把判定逻辑内联成一行：
+     * 内联写法要穿过 `su 0 -c` 的一道引号，多层转义很容易失效
+     * （曾出现「su 下手动跑正常、App 里却拿到空输出」）；
+     * 而脚本文件是现成的、逻辑与守护完全一致，不存在两边漂移。
      */
-    internal fun probeCommand(): String =
-        "curl -s -m 3 http://127.0.0.1:$PORT/healthz 2>/dev/null " +
-            "|| wget -q -T 3 -O - http://127.0.0.1:$PORT/healthz 2>/dev/null " +
-            "|| (echo > /dev/tcp/127.0.0.1/$PORT && echo ok) 2>/dev/null"
+    internal fun probeCommand(context: Context): String =
+        "sh '${ensureLocalScript(context).absolutePath}' probe 2>/dev/null"
+
+    /**
+     * 确保本机有一份可执行/可读的守护脚本副本（自检探活用）。
+     * 已安装时由 install() 写入；未安装时也从 assets 取一份，保证自检可用。
+     */
+    private fun ensureLocalScript(context: Context): File {
+        val local = File(context.filesDir, "rootkeep/$SCRIPT_NAME")
+        if (local.exists() && local.length() > 0) return local
+        runCatching {
+            local.parentFile?.mkdirs()
+            context.assets.open(SCRIPT_NAME).bufferedReader().use { r ->
+                local.writeText(r.readText())
+            }
+            local.setReadable(true, false)
+            local.parentFile?.setExecutable(true, false)
+        }
+        return local
+    }
+
+    /** 从磁盘脚本里读 VER= 的值（正在运行的这一版）。 */
+    private fun readScriptVersion(): String {
+        val out = runRootOutput("grep -m1 '^VER=' '/data/adb/service.d/$SCRIPT_NAME' 2>/dev/null")
+        return parseVer(out)
+    }
+
+    /** APK 内置脚本的版本（assets）。 */
+    private fun bundledScriptVersion(context: Context): String =
+        runCatching {
+            context.assets.open(SCRIPT_NAME).bufferedReader().use { r ->
+                r.readLines().firstOrNull { it.startsWith("VER=") }
+            }
+        }.let { parseVer(it ?: "") }
+
+    private fun parseVer(line: String): String =
+        line.substringAfter("VER=", "").trim().trim('"').take(40)
 
     /** 读守护日志尾部（排障用）。 */
     fun readLog(context: Context): String {
@@ -327,7 +381,10 @@ object RootKeeper {
             "magisk" -> listOf("/data/adb/service.d")
             // KernelSU / Sukisu：官方约定就是 ksu/service.d
             "ksu" -> listOf("/data/adb/ksu/service.d")
-            "apatch" -> listOf("/data/adb/ap/service.d")
+            // APatch 执行的是 Magisk 兼容目录 /data/adb/service.d，
+            // 不是 /data/adb/ap/service.d（那个目录只放 APatch 自己的二进制）。
+            // 早先写成 ap/service.d 时，脚本倒是铺进去了，但开机根本没人执行它。
+            "apatch" -> listOf("/data/adb/service.d")
             else -> emptyList()
         }
     }
