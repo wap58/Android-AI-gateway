@@ -326,6 +326,7 @@ fun ChoiceChip(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val container by animateColorAsState(
         targetValue = if (selected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surface,
@@ -334,7 +335,9 @@ fun ChoiceChip(
     )
     val content = if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.onSurface
     Box(
-        modifier = Modifier
+        // 内容居中：调用方给 weight 时会撑满一栏，不居中的话文字会贴左边
+        contentAlignment = Alignment.Center,
+        modifier = modifier
             .pressScale()
             .clip(CircleShape)
             .background(container)
@@ -342,7 +345,13 @@ fun ChoiceChip(
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge, color = content)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            color = content,
+            maxLines = 1,
+            softWrap = false,
+        )
     }
 }
 

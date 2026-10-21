@@ -90,36 +90,46 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
-            ChoiceChip(
-                text = "保存",
-                selected = false,
-                onClick = {
-                    val mb = bodyLimit.toIntOrNull()
-                    if (mb == null) {
-                        Toast.makeText(context, "请输入数字", Toast.LENGTH_SHORT).show()
-                    } else {
-                        val fixed = mb.coerceIn(
-                            dev.aigw.core.gateway.MIN_MAX_BODY_MB,
-                            dev.aigw.core.gateway.MAX_MAX_BODY_MB,
-                        )
-                        bodyLimit = fixed.toString()
-                        viewModel.updateSettings(settings.copy(maxRequestBodyMb = fixed))
-                        Toast.makeText(context, "已设为 ${fixed}MB", Toast.LENGTH_SHORT).show()
-                    }
-                },
-            )
-            // 快捷档位：常用值一键切换，省得手输
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            // 快捷档位紧跟输入框：先在输入框里看到当前值，下面一键改它，最后再保存。
+            // 档位文案用「8M / 16M / 32M / 64M」而不是 32MB —— 四个 chip 等宽排一行，
+            // 多一个字母在窄屏上就会被挤断行（64MB 变成「64M / B」两行）。
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 listOf(8, 16, 32, 64).forEach { mb ->
                     ChoiceChip(
-                        text = "${mb}MB",
+                        text = "${mb}M",
                         selected = settings.maxRequestBodyMb == mb,
+                        modifier = Modifier.weight(1f),
                         onClick = {
                             bodyLimit = mb.toString()
                             viewModel.updateSettings(settings.copy(maxRequestBodyMb = mb))
                         },
                     )
                 }
+            }
+
+            // 保存按钮贴卡片右下角：它是这个卡片的收尾动作，不该夹在输入框和档位之间
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                ChoiceChip(
+                    text = "保存",
+                    selected = false,
+                    onClick = {
+                        val mb = bodyLimit.toIntOrNull()
+                        if (mb == null) {
+                            Toast.makeText(context, "请输入数字", Toast.LENGTH_SHORT).show()
+                        } else {
+                            val fixed = mb.coerceIn(
+                                dev.aigw.core.gateway.MIN_MAX_BODY_MB,
+                                dev.aigw.core.gateway.MAX_MAX_BODY_MB,
+                            )
+                            bodyLimit = fixed.toString()
+                            viewModel.updateSettings(settings.copy(maxRequestBodyMb = fixed))
+                            Toast.makeText(context, "已设为 ${fixed}MB", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                )
             }
         }
 
