@@ -532,7 +532,7 @@ class TraeModelCatalogTest {
     fun `没有账号时不列模型`() {
         // 模型目录只在登录后向官方接口拉取：无账号时既不给内置快照，也不算失败
         // （否则用户会把内置快照当成可用模型，一发请求就缺凭证）。
-        val catalog = TraeModelCatalog(TraeChatClient(TraeVersion(), TraeRegion.CN.agentHost))
+        val catalog = TraeModelCatalog(listOf(TraeChatClient(TraeVersion(), TraeRegion.CN.agentHost)))
         val models = catalog.models(null)
         assertTrue(models.isEmpty(), "无账号不该列出模型，实际=${models.map { it.id }}")
         assertFalse(catalog.fromFallback)

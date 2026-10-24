@@ -31,6 +31,9 @@ class TraeChatClient(
     private val host: String,
     private val idleTimeoutMs: Int = TraeHttp.STREAM_IDLE_TIMEOUT_MS,
 ) {
+    /** 该 client 连接的上游集群地址（同一区域可能有多个候选集群）。 */
+    val endpoint: String get() = host
+
 
     /**
      * 发起 `llm_utils_chat`。返回的对象里 [TraeChatCall.stream] 是 SOLO 的 SSE 原始字节流，

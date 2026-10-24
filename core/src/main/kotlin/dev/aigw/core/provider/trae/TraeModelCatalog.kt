@@ -8,9 +8,17 @@ package dev.aigw.core.provider.trae
  * [fromFallback]，绝不展示打包的硬编码清单。
  */
 class TraeModelCatalog(
-    private val client: TraeChatClient,
+    /**
+     * 上游集群客户端，按优先级排列。
+     *
+     * 国际版同一账号可能只在某个区域集群可用（实测 sg/us 可用、cn 401）。
+     * 拉取失败时依次换下一个，成功的那个记住并优先使用，避免每轮都从头试。
+     */
+    private val clients: List<TraeChatClient>,
     private val nowMillis: () -> Long = System::currentTimeMillis,
 ) {
+    /** 当前验证可用的集群索引；-1 表示还没探出来。 */
+    private var healthyIndex = -1
     private var cached: List<TraeModel>? = null
     private var fetchedAt = 0L
     private var lastFailureAt = 0L
@@ -22,6 +30,30 @@ class TraeModelCatalog(
     /** 某个具体错误（如 4001）导致拉取失败时留给界面展示。 */
     var lastError: String = ""
         private set
+
+    /** 依次尝试各集群，返回第一个成功的清单；全失败时抛出最后一个异常。 */
+    private fun fetchWithFailover(account: TraeAccount): List<TraeModel> {
+        if (clients.isEmpty()) return emptyList()
+        // 先把上次验证可用的集群试一遍
+        val order = buildList {
+            if (healthyIndex in clients.indices) add(healthyIndex)
+            clients.indices.forEach { if (it != healthyIndex) add(it) }
+        }
+        var last: Exception? = null
+        for (idx in order) {
+            try {
+                val got = clients[idx].fetchModels(account)
+                if (got.isNotEmpty()) {
+                    healthyIndex = idx
+                    return got
+                }
+                last = IllegalStateException("上游返回空模型列表")
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: IllegalStateException("没有可用的上游集群")
+    }
 
     /**
      * 取模型清单。没有可用账号时返回空列表，不发请求。
@@ -46,7 +78,7 @@ class TraeModelCatalog(
         }
 
         return try {
-            val fetched = client.fetchModels(account)
+            val fetched = fetchWithFailover(account)
             if (fetched.isEmpty()) {
                 lastFailureAt = now
                 lastError = "上游返回空模型列表"

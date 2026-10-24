@@ -53,13 +53,16 @@ class TraeProvider(
     // 国内 / 国际两套客户端：上游 host 不同（trae.cn vs trae.ai），按账号区域取用。
     // 网关多线程并发调用 openChat/listModels，reconfigure() 也会并发 clear()，
     // 故必须用 ConcurrentHashMap（普通 HashMap 并发读写会死循环/丢数据）。
-    private val chatClients = ConcurrentHashMap<TraeRegion, TraeChatClient>()
+    // 键是「区域|集群地址」：同一区域有多个候选集群，只按区域做键会互相覆盖，
+    // 导致每个请求都在重建 client（连接复用全部失效）。
+    private val chatClients = ConcurrentHashMap<String, TraeChatClient>()
     private val authClients = ConcurrentHashMap<TraeRegion, TraeAuthClient>()
     private val checkinClients = ConcurrentHashMap<TraeRegion, TraeCheckinClient>()
     private val catalogs = ConcurrentHashMap<TraeRegion, TraeModelCatalog>()
 
-    private fun chatClient(region: TraeRegion): TraeChatClient =
-        chatClients.computeIfAbsent(region) { TraeChatClient(version(), region.agentHost) }
+    /** 按 (区域, 具体集群 host) 取 client；不同候选集群各建一个，避免互相覆盖。 */
+    private fun chatClientFor(region: TraeRegion, host: String): TraeChatClient =
+        chatClients.computeIfAbsent("${region.id}|$host") { TraeChatClient(version(), host) }
 
     // TraeAuthClient 读取账号自身的 apiHost，不按区域分实例
     private val authClientSingleton: TraeAuthClient get() = authClients.computeIfAbsent(TraeRegion.CN) { TraeAuthClient(version()) }
@@ -71,7 +74,12 @@ class TraeProvider(
         checkinClients.computeIfAbsent(region) { TraeCheckinClient(version(), region.ugHost, region) }
 
     private fun catalog(region: TraeRegion): TraeModelCatalog =
-        catalogs.computeIfAbsent(region) { TraeModelCatalog(chatClient(region), nowMillis) }
+        catalogs.computeIfAbsent(region) {
+            TraeModelCatalog(
+                clients = region.agentHostCandidates.map { TraeChatClient(version(), it) },
+                nowMillis = nowMillis,
+            )
+        }
 
     /** 客户端版本号变更后重建各客户端，并让模型目录缓存失效。 */
     fun reconfigure() {
@@ -152,7 +160,7 @@ class TraeProvider(
      */
     override fun hosts(): List<String> =
         TraeRegion.entries
-            .flatMap { listOf(it.agentHost, it.ugHost, it.oauthHost) }
+            .flatMap { region -> region.agentHostCandidates + listOf(region.ugHost, region.oauthHost) }
             .map { it.removePrefix("https://") }
             .distinct()
 
@@ -161,14 +169,34 @@ class TraeProvider(
     override fun openChat(account: ProviderAccount, openAiBody: String): ChatCall {
         val trae = parseOrNull(account) ?: return FailedChatCall(401, "账号凭证无法解析")
         val model = resolveModel(requestedModelOf(openAiBody))
-        val call = try {
-            chatClient(regionOfAccount(account)).openStream(trae, openAiBody)
-        } catch (e: TraeHttpException) {
-            return FailedChatCall(e.status, e.body)
+        val region = regionOfAccount(account)
+        // 集群自动切换：国际版账号可能只在某个区域集群可用（实测同一账号
+        // sg/us 正常、cn 返回 1001）。失败就换下一个候选集群，
+        // 避免用户看到「凭证已失效」而实际只是集群选错了。
+        var call: TraeChatCall? = null
+        var lastStatus = 0
+        var lastBody = ""
+        for (host in region.agentHostCandidates) {
+            val client = chatClientFor(region, host)
+            val attempt = try {
+                client.openStream(trae, openAiBody)
+            } catch (e: TraeHttpException) {
+                lastStatus = e.status
+                lastBody = e.body
+                continue
+            }
+            if (attempt.status >= 400) {
+                lastStatus = attempt.status
+                lastBody = attempt.errorBody
+                continue
+            }
+            call = attempt
+            break
         }
-        if (call.status >= 400) return FailedChatCall(call.status, call.errorBody)
+        val settled = call ?: return FailedChatCall(lastStatus, lastBody)
+        if (settled.status >= 400) return FailedChatCall(settled.status, settled.errorBody)
         // 上游 200 但没回 SSE（签名失效时常直接回 JSON 错误体）：errorBody 已带诊断信息
-        val stream = call.stream ?: return FailedChatCall(call.status, call.errorBody)
+        val stream = settled.stream ?: return FailedChatCall(settled.status, settled.errorBody)
 
         if (isStreamingBody(openAiBody)) {
             val parser = SoloSseParser()
@@ -389,14 +417,38 @@ class TraeProvider(
         )
     }
 
+    /**
+     * 选账号的 apiHost。
+     *
+     * 回调给的 host 属于「这次登录实际使用的集群」，优先采信；
+     * 但它必须是能承载 OAuth 的域名（`api*.trae.ai` / `api.trae.com.cn`），
+     * 别的（比如控制台 www.*）不接受，否则换 token 会打到 SPA 上。
+     */
+    private fun pickApiHost(loginHost: String, region: TraeRegion): String {
+        // 回调里 api-sg-central.trae.ai 这类「区域集群控制面」只承载 OAuth，
+        // agent 接口在它上面是 404，所以**不能**直接用它当 apiHost。
+        // 一律用区域固定的 oauthHost；回调 host 只用来判断区域归属。
+        if (loginHost.isEmpty()) return region.oauthHost
+        val host = loginHost.removePrefix("https://").removePrefix("http://").substringBefore('/')
+        return when {
+            host.contains("trae.com.cn") -> TraeRegion.CN.oauthHost
+            host.contains("trae.ai") -> TraeRegion.INTL.oauthHost
+            else -> region.oauthHost
+        }
+    }
+
     override fun completeWebLogin(callbackUrl: String): ProviderAccount {
         val callback = TraeLogin.parseCallback(callbackUrl)
         val traceId = queryParam(callbackUrl, "loginTraceID")
         val machine = resolveMachine(traceId)
+        // 回调里的 host 是**这次登录真正落地的集群**，优先级最高。
+        // 实测：国际版也可能回调 api-sg-central.trae.ai（而不是写死的 api.trae.ai），
+        // 那个域名上 /api/ide/v1/get_detail_param 是 404，拿它当 apiHost 会一路 401/1001。
+        val loginHost = queryParam(callbackUrl, "host").trim().trimEnd('/')
         // 回调里的 loginHost / 回调域名能区分发行版；拿不到就按国内版处理
         val region = TraeRegion.infer(
-            queryParam(callbackUrl, "loginHost"),
-            callback.enterpriseId.ifEmpty { queryParam(callbackUrl, "host") },
+            queryParam(callbackUrl, "loginHost").ifEmpty { loginHost },
+            callback.enterpriseId.ifEmpty { loginHost },
         )
         var account = TraeAccount(
             uid = callback.uid,
@@ -408,7 +460,10 @@ class TraeProvider(
             machineId = machine?.first ?: TraeLogin.newMachineId(),
             deviceId = machine?.second ?: TraeLogin.randomDeviceId(),
             domain = region.id,
-            apiHost = region.oauthHost,
+            // apiHost 存的是 OAuth host（换 token / 取用户信息用），
+            // 不能存回调里的 api-sg-central.trae.ai —— 那上面没有 agent 接口（404）。
+            // 真正的 agent 集群由 TraeRegion.agentHost 决定。
+            apiHost = pickApiHost(loginHost, region),
         )
         if (account.refreshToken.isNotEmpty()) account = authClient(region).exchangeToken(account)
         account = authClient(region).getUserInfo(account)

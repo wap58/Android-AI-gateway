@@ -42,6 +42,20 @@ enum class TraeRegion(
     ),
     ;
 
+    /**
+     * agent 集群的候选列表（按优先级）。
+     *
+     * 国际版账号可能被分到不同区域的集群（实测同一账号在 sg / us 上都可用，
+     * 而 cn 会 401）。上游按账号注册地路由，配置变了或跨区迁移后就可能出现
+     * 「token 换得通、但打 cn 集群一直 1001」的情况 —— 那时自动换下一个集群即可。
+     */
+    val agentHostCandidates: List<String>
+        get() = if (this == INTL) {
+            listOf(agentHost, "https://trae-api-us.mchost.guru")
+        } else {
+            listOf(agentHost)
+        }
+
     /** 额度/支付接口的版本段：国内 v2，国际 v1。 */
     val payVersion: String get() = if (this == INTL) "v1" else "v2"
 
