@@ -444,10 +444,10 @@ class TraeProvider(
         // 回调里的 host 是**这次登录真正落地的集群**，优先级最高。
         // 实测：国际版也可能回调 api-sg-central.trae.ai（而不是写死的 api.trae.ai），
         // 那个域名上 /api/ide/v1/get_detail_param 是 404，拿它当 apiHost 会一路 401/1001。
-        val loginHost = queryParam(callbackUrl, "host").trim().trimEnd('/')
+        val loginHost = queryParam(callbackUrl, "host").orEmpty().trim().trimEnd('/')
         // 回调里的 loginHost / 回调域名能区分发行版；拿不到就按国内版处理
         val region = TraeRegion.infer(
-            queryParam(callbackUrl, "loginHost").ifEmpty { loginHost },
+            queryParam(callbackUrl, "loginHost").orEmpty().ifEmpty { loginHost },
             callback.enterpriseId.ifEmpty { loginHost },
         )
         var account = TraeAccount(
