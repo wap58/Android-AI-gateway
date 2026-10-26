@@ -15,3 +15,6 @@ scripts/
 
 # UI 方案稿（本地设计草稿）
 ui-proposals/
+
+# 本地构建用的 aapt2 覆盖（沙箱 aarch64 无法直接跑 x86-64 的 aapt2）
+# 只在本地 gradle.properties 里追加，不进仓库

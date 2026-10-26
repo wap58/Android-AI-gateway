@@ -1,5 +1,8 @@
 package dev.aigw.app.ui
 
+import android.app.Activity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,7 +16,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -21,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.app.ui.providers.ProviderUiRegistry
+import dev.aigw.app.ui.login.WebCookieLoginActivity
 /**
  * 供应商详情：登录入口 + 账号列表 + 专属设置。
  *
@@ -37,7 +44,60 @@ fun ProviderDetailScreen(
 ) {
     val ui = remember(providerId) { ProviderUiRegistry.require(providerId) }
     val info = state.providerOf(providerId)
-    val accounts = state.accountsOf(providerId)
+    val allAccounts = state.accountsOf(providerId)
+    // ★ 有区域概念的供应商（Qoder）按「当前选中区域」过滤账号列表：
+    //   选国际版就只显示国际版账号，国内版账号不混进来。
+    //   没有区域概念的供应商 regionsOf 返回空，原样显示全部账号。
+    // 按当前选中区域过滤账号列表（和 Trae / WorkBuddy 的行为一致：
+    // 选中哪个区就只显示那个区的账号）。区域 id 已统一成 cn / global。
+    // 区域过滤。
+    //
+    // ★ 必须用 **Compose 状态** 承载 selectedRegion：之前直接读
+    //   viewModel.selectedRegionOf()（普通函数调用），值变了但 AppUiState
+    //   没变 → 不触发重组 → 界面永远停在旧区域，表现为「切到国内版还显示国际账号」。
+    val regions = remember(providerId) { viewModel.regionsOf(providerId) }
+
+    // ★ 当前区域以 settings 为唯一来源。
+    //   之前用 remember(providerId) 存本地副本：进出页面时本地值与 settings 会脱节
+    //   （只有 providerId 变化才重新初始化），表现为「停在哪个区就哪个区有账号，
+    //   点别的区就没有」，退出重进又恢复。
+    //   现在 settings 变化会经 refresh 进入 state，state 变化触发重组，直接读最新值。
+    // ★ 区域从快照里的 ProviderInfo 读：settings 一变就会经 refresh 进 state，
+    //   state 变化触发重组，界面自然跟上。之前用本地 remember 副本，
+    //   只在 providerId 变化时才初始化，退出重进时与 settings 脱节。
+    val selectedRegion = info?.region.orEmpty()
+
+    val onRegionChanged: (String) -> Unit = { r ->
+        viewModel.updateProviderOption(providerId, "region", r)
+    }
+    // ★ 只读快照里的 region，不再实时查 engine：
+    //   engine 与 state 是两个数据源，刷新不同步，实时查会漏账号（时有时无）。
+    val accounts = if (regions.size > 1 && selectedRegion.isNotEmpty()) {
+        allAccounts.filter { it.region == selectedRegion }
+    } else {
+        allAccounts
+    }
+
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var pendingCookieProvider by remember { mutableStateOf("") }
+
+    // 内嵌网页抓 cookie 登录：需要读 WebView 的 cookie 存储，必须留在 App 内
+    val cookieLoginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val cookie = result.data?.getStringExtra(WebCookieLoginActivity.EXTRA_RESULT_COOKIE).orEmpty()
+        val cookieAlt = result.data?.getStringExtra(WebCookieLoginActivity.EXTRA_RESULT_COOKIE_ALT).orEmpty()
+        val targetProvider = pendingCookieProvider
+        pendingCookieProvider = ""
+        if (cookie.isNotEmpty() && targetProvider.isNotEmpty()) {
+            // 两份凭证一起交：kdocs（对话专业版）+ wps.cn（模型/签到/额度）
+            // 用不可见分隔符拼接两份：kdocs（对话用）在后面，wps.cn（业务用）在前
+            val merged = if (cookieAlt.isEmpty()) cookie else "$cookieAlt\u0001$cookie"
+            viewModel.importCredentials(targetProvider, merged)
+        } else {
+            viewModel.notice("没有读到登录 cookie，请重新登录")
+        }
+    }
 
     // 缓存回调集合：30+ 个 lambda 每次重组重建会让账号卡片永远无法跳过重组。
     // creditPacks/taskLists 随 state 变化，用 rememberUpdatedState 读取最新值。
@@ -57,6 +117,18 @@ fun ProviderDetailScreen(
                     viewModel.smsLogin(id, phone, code, ccode, onResult)
                 }
             },
+            onCookieLogin = { id, startUrl, cookieHost, cookieName, ssoUrl, verifyUrl, clearFirst ->
+                pendingCookieProvider = id
+                val intent = android.content.Intent(ctx, WebCookieLoginActivity::class.java).apply {
+                    putExtra(WebCookieLoginActivity.EXTRA_START_URL, startUrl)
+                    putExtra(WebCookieLoginActivity.EXTRA_COOKIE_HOST, cookieHost)
+                    putExtra(WebCookieLoginActivity.EXTRA_COOKIE_NAME, cookieName)
+                    putExtra(WebCookieLoginActivity.EXTRA_CLEAR_FIRST, clearFirst)
+                    putExtra(WebCookieLoginActivity.EXTRA_SSO_URL, ssoUrl)
+                    putExtra(WebCookieLoginActivity.EXTRA_VERIFY_URL, verifyUrl)
+                }
+                cookieLoginLauncher.launch(intent)
+            },
             onImport = { id, raw -> viewModel.importCredentials(id, raw) },
             onAddCustomAccount = { id, nickname, apiKey, models -> viewModel.addCustomAccount(id, nickname, apiKey, models) },
             onRenameAccount = { id, uid, nickname -> viewModel.renameAccount(id, uid, nickname) },
@@ -70,10 +142,12 @@ fun ProviderDetailScreen(
             onAction = { id, uid, action, payload -> viewModel.performAction(id, uid, action, payload) },
             onToggleAccount = { id, uid, enabled -> viewModel.setAccountEnabled(id, uid, enabled) },
             onRemoveAccount = { id, uid -> viewModel.removeAccount(id, uid) },
+            onRegionPicked = onRegionChanged,
             onUpdateSecret = { id, uid, secret, notice ->
                 viewModel.updateAccountSecret(id, uid, secret)
                 viewModel.notice(notice)
             },
+            secretOf = { id, uid -> viewModel.secretOf(id, uid) },
             deviceIdOf = { id, uid -> viewModel.deviceIdOf(id, uid) },
             regionOf = { id, uid -> viewModel.accountRegion(id, uid) },
             providerOptionOf = { id, key, fallback -> viewModel.providerOption(id, key, fallback) },

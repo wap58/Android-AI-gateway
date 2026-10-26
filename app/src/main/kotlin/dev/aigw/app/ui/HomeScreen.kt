@@ -65,6 +65,10 @@ fun HomeScreen(
     state: AppUiState,
     viewModel: AppViewModel,
     openProviders: () -> Unit,
+    openModels: () -> Unit,
+    openCredits: () -> Unit,
+    openUsage: () -> Unit,
+    openLogs: () -> Unit,
     openTaskCenter: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -107,7 +111,7 @@ fun HomeScreen(
             },
         )
 
-        TelemetryGrid(state, Modifier.staggeredAppear(1))
+        TelemetryGrid(state, openProviders, openModels, openCredits, openUsage, openLogs, Modifier.staggeredAppear(1))
 
         // 批量动作进行中/结束：首页也要看得到进度与失败原因（签到按钮就在本页）
         BatchProgressHost(state.batchProgress)
@@ -207,8 +211,14 @@ private fun ConsoleCard(
     onCopy: (String, String) -> Unit,
 ) {
     val gold = LocalAppColors.current.goldStart
+    val ctx = LocalContext.current
+    val verName = remember {
+        runCatching {
+            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName.orEmpty()
+        }.getOrDefault("")
+    }
     SectionCard(modifier = Modifier.staggeredAppear(0)) {
-        SectionHeader("网关状态")
+        SectionHeader("网关状态", action = if (verName.isNotEmpty()) "v$verName" else null)
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -477,25 +487,39 @@ private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float
 
 /** 2×3 遥测指标网格。 */
 @Composable
-private fun TelemetryGrid(state: AppUiState, modifier: Modifier = Modifier) {
+private fun TelemetryGrid(
+    state: AppUiState,
+    onOpenProviders: () -> Unit,
+    onOpenModels: () -> Unit,
+    onOpenCredits: () -> Unit,
+    onOpenUsage: () -> Unit,
+    onOpenLogs: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            ProvidersTile(state, Modifier.weight(1f))
+            ProvidersTile(state, onOpenProviders, Modifier.weight(1f))
             ReadinessTile(state, Modifier.weight(1f))
-            ModelsTile(state, Modifier.weight(1f))
+            ModelsTile(state, onOpenModels, Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            RequestsTile(state, Modifier.weight(1f))
-            TodayTokensTile(state, Modifier.weight(1f))
-            CreditsTile(state, Modifier.weight(1f))
+            RequestsTile(state, onOpenLogs, Modifier.weight(1f))
+            TodayTokensTile(state, onOpenUsage, Modifier.weight(1f))
+            CreditsTile(state, onOpenCredits, Modifier.weight(1f))
         }
     }
 }
 
 @Composable
-private fun Tile(modifier: Modifier, label: String, content: @Composable ColumnScope.() -> Unit) {
+private fun Tile(
+    modifier: Modifier,
+    label: String,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     Column(
         modifier = modifier
+            .then(if (onClick != null) Modifier.bouncyClick(onClick = onClick) else Modifier)
             .height(112.dp)
             .clip(MaterialTheme.shapes.large)
             .background(MaterialTheme.colorScheme.surface)
@@ -551,8 +575,8 @@ private fun TileNote(text: String) {
 }
 
 @Composable
-private fun ProvidersTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "账号") {
+private fun ProvidersTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
+    Tile(modifier, "账号", onClick) {
         BigNumber(state.accounts.size.toString())
         TileNote(
             if (state.providers.isEmpty()) "暂无账号" else state.providers.joinToString(" · ") { it.displayName },
@@ -616,8 +640,8 @@ private fun ReadinessRing(percent: Int, fraction: Float) {
 }
 
 @Composable
-private fun ModelsTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "聚合模型") {
+private fun ModelsTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
+    Tile(modifier, "聚合模型", onClick) {
         BigNumber(state.models.size.toString())
         TileNote(
             when {
@@ -630,8 +654,8 @@ private fun ModelsTile(state: AppUiState, modifier: Modifier) {
 }
 
 @Composable
-private fun RequestsTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "今日请求") {
+private fun RequestsTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
+    Tile(modifier, "今日请求", onClick) {
         BigNumber(formatCount(state.today.requests))
         // 增长需要真实昨日数据：daily 末尾是今天，倒数第二个才是昨天。
         val yesterday = if (state.daily.size >= 2) state.daily[state.daily.size - 2] else null
@@ -648,18 +672,18 @@ private fun RequestsTile(state: AppUiState, modifier: Modifier) {
 }
 
 @Composable
-private fun TodayTokensTile(state: AppUiState, modifier: Modifier) {
-    Tile(modifier, "今日 Tokens") {
+private fun TodayTokensTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
+    Tile(modifier, "今日 Tokens", onClick) {
         BigNumber(formatTokens(state.today.totalTokens))
         TileNote("输入 ${formatTokens(state.today.promptTokens)} · 输出 ${formatTokens(state.today.completionTokens)}")
     }
 }
 
 @Composable
-private fun CreditsTile(state: AppUiState, modifier: Modifier) {
+private fun CreditsTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
     val known = state.pool.creditsKnown > 0
     val goldText = LocalAppColors.current.goldText
-    Tile(modifier, "已知额度") {
+    Tile(modifier, "已知额度", onClick) {
         BigNumber(
             value = if (known) formatCount(state.pool.totalCredits) else "—",
             color = if (known) goldText else MaterialTheme.colorScheme.onSurfaceVariant,

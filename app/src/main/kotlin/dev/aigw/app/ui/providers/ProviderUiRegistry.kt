@@ -5,6 +5,7 @@ import dev.aigw.app.ui.providers.antigravity.AntigravityUi
 import dev.aigw.app.ui.providers.codebuddy.CodeBuddyUi
 import dev.aigw.app.ui.providers.custom.CustomUi
 import dev.aigw.app.ui.providers.loomy.LoomyUi
+import dev.aigw.app.ui.providers.lingxi.LingxiUi
 import dev.aigw.app.ui.providers.opencode.OpenCodeUi
 import dev.aigw.app.ui.providers.raccoon.RaccoonUi
 import dev.aigw.app.ui.providers.trae.TraeUi
@@ -24,6 +25,7 @@ object ProviderUiRegistry {
         AntigravityUi,
         RaccoonUi,
         OpenCodeUi,
+        LingxiUi,
     ).associateBy { it.id }
 
     private val customCache = ConcurrentHashMap<String, ProviderUi>()

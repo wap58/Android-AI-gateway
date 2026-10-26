@@ -94,6 +94,43 @@ def strip_code(text):
     return "".join(out)
 
 
+def check_nested_comment(path, raw):
+    """Kotlin 的块注释可嵌套：`/*` 出现在 KDoc 里会让注释一直不闭合。
+
+    真实踩坑：KDoc 里写 `` `/algo/api/v2/model/list` `` 时，`/list` 后面的
+    `` ` `` 没有紧跟 `/*`，但 `/*` 本身出现在注释中间 —— 编译器按嵌套处理，
+    报「Unclosed comment」，而错误行号指向文件末尾，很难定位。
+    """
+    depth = 0
+    i = 0
+    n = len(raw)
+    line = 1
+    while i < n:
+        c = raw[i]
+        if c == "\n":
+            line += 1
+            i += 1
+            continue
+        two = raw[i:i + 2]
+        if two == "//":
+            j = raw.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if two == "/*":
+            depth += 1
+            if depth > 1:
+                errors.append(f"{path}:{line} 块注释里又出现 `/*`（Kotlin 注释可嵌套，会导致未闭合）")
+            i += 2
+            continue
+        if two == "*/":
+            depth = max(0, depth - 1)
+            i += 2
+            continue
+        i += 1
+    if depth != 0:
+        errors.append(f"{path} 块注释未闭合（剩余深度 {depth}）")
+
+
 def check_balance(path, code):
     stack = []
     pairs = {")": "(", "]": "[", "}": "{"}
@@ -214,7 +251,21 @@ def check_cross_package_usage(fq):
                 continue  # 同包，无需 import
             if simple in imported_simple:
                 continue
+            # 只把「独立出现」的当类型引用；`SomeEnum.Member` 这种限定名属于成员访问，
+            # 不是对类型的引用（典型误报：ResilienceEditTarget.Retry 里的 Retry）。
             if not re.search(r"(?<![\w.])" + re.escape(simple) + r"(?![\w])", code):
+                continue
+            if not re.search(
+                r"(?<![\w.])" + re.escape(simple) + r"(?![\w.])",
+                code,
+            ):
+                continue
+            # 本文件自己声明了同名枚举成员（如 `enum class X { Retry }`）则豁免
+            if re.search(
+                r"enum\s+class\s+\w+[^{]*\{[^}]*\b" + re.escape(simple) + r"\b",
+                code,
+                re.S,
+            ):
                 continue
             # 本文件自己声明了同名类型则豁免
             if re.search(r"\b(?:object|class|interface|fun|val)\s+" + re.escape(simple) + r"\b", code):
@@ -354,6 +405,7 @@ def main():
         raw = open(path, encoding="utf-8").read()
         rel = os.path.relpath(path, ROOT)
         check_balance(rel, strip_code(raw))
+        check_nested_comment(rel, raw)
         check_empty_bodies(path, raw)
         check_dup_fun(path, raw)
     check_refs(members, fq)

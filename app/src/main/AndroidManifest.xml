@@ -35,6 +35,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 内嵌网页登录：没有 OAuth 回调的上游（WPS 灵犀）在这里登录后抓 cookie -->
+
+        <activity
+            android:name=".ui.login.WebCookieLoginActivity"
+            android:exported="false"
+            android:label="登录"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".service.GatewayService"
             android:exported="false"

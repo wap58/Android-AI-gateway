@@ -62,12 +62,13 @@ class AutoCheckinScheduler(
         // 上一轮还没跑完
         if (!running.compareAndSet(false, true)) return
         try {
-            // 循环内再判一次：签到要走网络，可能跨越零点
+            // 循环内再判一次：签到要走网络，可能跨越周期边界
             if (prefs.isCheckedToday(nowMillis())) return
             val ok = runCatching { runCheckin() }.getOrDefault(false)
             if (ok) {
-                // 只有成功才记「今天已签」，失败保持可手动重试
-                prefs.markChecked(nowMillis())
+                // 只有成功才记「本周期已签」，失败保持可手动重试。
+                // 各供应商的周期起点可能不同（Qoder 是 10:00），
+                // 由 GatewayEngine 在跑完后按 provider 分别 markChecked。
                 prefs.setLastResult(true, "自动签到完成")
             } else {
                 prefs.setLastResult(false, "自动签到未全部成功，可手动重试")

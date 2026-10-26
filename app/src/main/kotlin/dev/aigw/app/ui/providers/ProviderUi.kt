@@ -38,6 +38,23 @@ class ProviderUiActions(
     val onSmsLogin:
         (providerId: String, phone: String, code: String, ccode: String, onResult: (String) -> Unit) -> Unit =
         { _, _, _, _, _ -> },
+    /**
+     * 内嵌网页登录后抓 cookie（WPS 灵犀这类没有 OAuth 回调、登录态就是 cookie 的上游）。
+     *
+     * 与 [onWebLogin] 的区别：后者交给系统浏览器并由本地端口接回调；
+     * 这里必须留在 App 内，因为要读取 WebView 的 cookie 存储。
+     */
+    val onCookieLogin:
+        (
+            providerId: String,
+            startUrl: String,
+            cookieHost: String,
+            cookieName: String,
+            ssoUrl: String,
+            verifyUrl: String,
+            clearFirst: Boolean,
+        ) -> Unit = { _, _, _, _, _, _, _ -> },
+
     /** 粘贴凭证 JSON 导入。 */
     val onImport: (providerId: String, raw: String) -> Unit = { _, _ -> },
     /** 刷新额度；uid 为空表示刷新该供应商全部账号。 */
@@ -49,6 +66,10 @@ class ProviderUiActions(
     /** 账号凭证级修改（如 Trae 的设备指纹）：直接替换 secret。 */
     val onUpdateSecret: (providerId: String, uid: String, secret: String, notice: String) -> Unit =
         { _, _, _, _ -> },
+    /** 用户在供应商卡片里切换了区域（Qoder 用）。外层据此刷新账号列表。 */
+    val onRegionPicked: (region: String) -> Unit = {},
+    /** 读账号的原始凭证 JSON（供应商专属修正在界面侧直接改时用）。 */
+    val secretOf: (providerId: String, uid: String) -> String = { _, _ -> "" },
     /** 读账号的当前设备指纹（仅 Trae 用；其它供应商返回空串）。 */
     val deviceIdOf: (providerId: String, uid: String) -> String = { _, _ -> "" },
     /** 读账号所属区域（如 WorkBuddy 的 cn/global；无区域概念返回空串）。 */

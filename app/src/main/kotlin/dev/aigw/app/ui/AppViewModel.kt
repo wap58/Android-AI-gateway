@@ -288,6 +288,8 @@ data class AppUiState(
     /** 模型测速状态，键为 `model.fullId`。 */
     val modelTestLatencies: Map<String, ModelTestStatus> = emptyMap(),
     val calls: List<CallRecord> = emptyList(),
+    /** 签到历史记录（最新在前）。 */
+    val checkinRecords: List<dev.aigw.core.usage.CheckinRecord> = emptyList(),
     /** 存储中的记录条数（含未载入内存的）。 */
     val storedCalls: Int = 0,
     /** 已拉取的额度包明细，键为 `providerId/uid`。 */
@@ -535,6 +537,7 @@ class AppViewModel(
                 accounts = snapshot.accounts,
                 customProviders = snapshot.customProviders,
                 calls = snapshot.calls,
+                checkinRecords = engine.checkinLog.all(),
                 logs = snapshot.logs,
                 settings = snapshot.settings,
                 proxy = snapshot.proxy,
@@ -1316,7 +1319,8 @@ class AppViewModel(
                     is DeviceAuthPoll.Pending -> delay(3_000)
                     is DeviceAuthPoll.Success -> {
                         _state.value = _state.value.copy(busy = "", notice = "登录成功：${poll.account.nickname.ifEmpty { poll.account.uid }}")
-                        refresh()
+                        // 登录已成功：后续刷新即使抛异常也不该把 App 带走（它在主线程协程里）
+                        runCatching { refresh() }
                         return@launch
                     }
                     is DeviceAuthPoll.Failed -> {
@@ -1544,7 +1548,7 @@ class AppViewModel(
             .filter { ProviderCapability.CHECKIN in it.capabilities }
             .flatMap { info -> engine.accounts(info.id) }
             // 区域型供应商的国际版没有签到制度（Trae INTL / WorkBuddy global），跳过避免整批报错
-            .filter { account -> accountRegion(account.providerId, account.uid) != TraeRegion.INTL.id }
+            .filter { account -> account.region != TraeRegion.INTL.id }
             .map { BatchTarget(it.providerId, it.uid) }
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
         engine.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
@@ -1653,6 +1657,10 @@ class AppViewModel(
         engine.registry.get(TraeProvider.ID) as? TraeProvider
             ?: throw IllegalStateException("Trae 供应商不可用")
 
+    /** 读账号原始凭证 JSON（界面侧做供应商专属修正时用）。 */
+    fun secretOf(providerId: String, uid: String): String =
+        engine.account(providerId, uid)?.secret.orEmpty()
+
     fun deviceIdOf(providerId: String, uid: String): String {
         if (providerId != TraeProvider.ID) return ""
         val provider = engine.registry.get(providerId) as? TraeProvider ?: return ""
@@ -1666,6 +1674,21 @@ class AppViewModel(
      * 都不同（Trae 的 secret 是嵌套结构且存区域 id，WorkBuddy 是扁平结构且存主机名），
      * UI 再解析一遍 secret 必然走样。
      */
+    /** 该供应商支持的区域 id 列表；没有区域概念时返回空。 */
+    fun regionsOf(providerId: String): List<String> {
+        val provider = engine.registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
+            ?: return emptyList()
+        return provider.regions()
+    }
+
+    /** 当前选中区域（存在供应商 settings 的 region 选项里）。 */
+    fun selectedRegionOf(providerId: String): String =
+        providerSettings(providerId).option("region", "")
+
+    /** 账号所属区域（已登录账号的真实归属）。 */
+    fun regionOfAccount(providerId: String, uid: String): String =
+        accountRegion(providerId, uid)
+
     fun accountRegion(providerId: String, uid: String): String {
         val provider = engine.registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
             ?: return ""

@@ -26,6 +26,14 @@ data class AccountStatus(
     val disabled: Boolean,
     /** 用户手动软开关。 */
     val enabled: Boolean,
+    /**
+     * 所属区域（如 Trae 的 cn/global）。
+     *
+     * 由 provider 在生成状态时填好，随快照一起下发 —— 界面过滤必须用它，
+     * 不能在渲染时去 engine 实时查：那是另一个数据源，与快照刷新不同步，
+     * 会出现「账号时有时无」。
+     */
+    val region: String = "",
 ) {
     val usable: Boolean get() = !disabled && enabled
 }

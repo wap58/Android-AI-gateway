@@ -24,11 +24,27 @@ data class CreditInfo(
     val detail: String = "",
 )
 
-/** provider 专属动作的结果。 */
+/**
+ * provider 专属动作的结果。
+ *
+ * [amount] / [streak] / [total] / [kind] 是签到类动作的结构化结果，
+ * 供签到记录页展示「拿了多少、连续几天、累计多少」；其它动作用默认值。
+ */
 data class ProviderActionResult(
     val ok: Boolean,
     val message: String,
     val unsupported: Boolean = false,
+    /** 本次获得的数量（智点/积分）。 */
+    val amount: Long = 0,
+    /** 连续天数。 */
+    val streak: Int = 0,
+    /** 累计数量。 */
+    val total: Long = 0,
+    /**
+     * 结果类型：`claimed` 新签到成功 / `already` 今天已签 / `failed` 失败。
+     * 空串表示不适用（非签到动作）。
+     */
+    val kind: String = "",
 ) {
     companion object {
         fun success(message: String = "") = ProviderActionResult(true, message)

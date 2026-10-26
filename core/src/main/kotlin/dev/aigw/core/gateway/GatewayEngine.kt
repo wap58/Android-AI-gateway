@@ -123,6 +123,8 @@ data class ProviderInfo(
     val capabilities: Set<ProviderCapability>,
     val enabled: Boolean,
     val accountCount: Int,
+    /** 当前选中的区域（有区域概念的供应商才有意义，其余为空串）。 */
+    val region: String = "",
     val usableCount: Int,
     /** 用户手动导入的供应商（可编辑/删除）。 */
     val custom: Boolean,
@@ -319,6 +321,11 @@ class GatewayEngine(
         dev.aigw.core.usage.AutoCheckinPrefs(store)
     }
 
+    /** 签到历史记录（独立存储，不会被请求日志的环形缓冲冲掉）。 */
+    val checkinLog: dev.aigw.core.usage.CheckinLogStore by lazy {
+        dev.aigw.core.usage.CheckinLogStore(store)
+    }
+
     private val autoCheckin: dev.aigw.core.gateway.AutoCheckinScheduler by lazy {
         dev.aigw.core.gateway.AutoCheckinScheduler(
             scheduler = scheduler,
@@ -396,6 +403,17 @@ class GatewayEngine(
             val results = runCatching { performActionAll(targets, action) }.getOrElse { emptyList() }
             total += results.size
             ok += results.count { it.ok }
+
+            // 按供应商记「本周期已签」：每个供应商的周期起点不同
+            // （Qoder 的 100 Credits 是 10:00→次日 10:00），必须分开记，
+            // 否则一个供应商签到成功会把另一个也标成已签。
+            val providerId = targets.firstOrNull()?.providerId.orEmpty()
+            val cycleHour = providerId.takeIf { it.isNotEmpty() }
+                ?.let { id -> registry.get(id)?.checkinCycleStartHour }
+                ?: 0
+            if (results.any { it.ok }) {
+                autoCheckinPrefs.markChecked(nowMillis(), startHour = cycleHour, scope = providerId)
+            }
             results.filter { !it.ok }.forEach {
                 failures.add("${it.nickname.ifEmpty { it.uid }}：${it.message}")
             }
@@ -619,6 +637,7 @@ class GatewayEngine(
             enabled = providerSettings(provider.id).enabled,
             accountCount = summary.total,
             usableCount = summary.usable,
+            region = providerSettings(provider.id).option("region", ""),
             custom = provider.id.startsWith(CUSTOM_PREFIX),
         )
     }
@@ -671,7 +690,22 @@ class GatewayEngine(
 
     // ------------------------------------------------------------------ 账号
 
-    fun accounts(providerId: String? = null): List<AccountStatus> = pool.statuses(providerId)
+    /**
+     * 账号状态列表。
+     *
+     * 区域在这里一次算好写进状态，界面直接用 —— 不要在渲染时再去查 engine，
+     * 那会和快照不同步，表现为账号「时有时无」。
+     */
+    fun accounts(providerId: String? = null): List<AccountStatus> =
+        pool.statuses(providerId).map { st -> st.copy(region = regionOfAccount(st)) }
+
+    /** 用 provider 判定某个账号属于哪个区域；不支持的供应商返回空串。 */
+    private fun regionOfAccount(status: AccountStatus): String {
+        val provider = registry.get(status.providerId) as? dev.aigw.core.provider.RegionAwareSupport
+            ?: return ""
+        val account = pool.account(status.providerId, status.uid) ?: return ""
+        return provider.regionOf(account).orEmpty()
+    }
 
     /** 取账号的原始凭证（供供应商专属 UI 组件做凭证级操作，如校正设备指纹）。 */
     fun account(providerId: String, uid: String): ProviderAccount? = pool.account(providerId, uid)
@@ -860,10 +894,16 @@ class GatewayEngine(
             // 单个账号抛异常也不能拖垮整批：就地转成失败结果。
             val outcome = runCatching { performActionRaw(target.providerId, target.uid, action, payload) }
             val nickname = pool.account(target.providerId, target.uid)?.nickname ?: ""
-            outcome.fold(
+            val result = outcome.fold(
                 { BatchActionResult(target.providerId, target.uid, nickname, it.ok, it.message) },
                 { BatchActionResult(target.providerId, target.uid, nickname, false, it.message ?: "操作失败") },
             )
+            // ★ 所有供应商的签到动作统一落一条记录（手动批量 / 自动签到都走这里）
+            if (action == ACTION_CHECKIN) {
+                val raw = outcome.getOrNull()
+                recordCheckin(target.providerId, target.uid, nickname, result.ok, raw, result.message)
+            }
+            result
         }
 
         // 批量结束后统一刷一次额度，替掉原先「每个账号动作成功后立刻补刷」的逐账号额外请求。
@@ -871,6 +911,39 @@ class GatewayEngine(
         val succeeded = results.filter { it.ok }.map { BatchTarget(it.providerId, it.uid) }
         if (succeeded.isNotEmpty()) refreshCreditsBounded(succeeded, parallelism)
         return results
+    }
+
+    /**
+     * 追加一条签到记录。
+     *
+     * 统一在这里写，所有供应商、手动与自动签到都会经过 [performActionAll]，
+     * 所以不必在每家 provider 里各写一遍。
+     */
+    private fun recordCheckin(
+        providerId: String,
+        uid: String,
+        nickname: String,
+        ok: Boolean,
+        raw: ProviderActionResult?,
+        fallbackMessage: String,
+    ) {
+        runCatching {
+            val kind = when {
+                raw?.kind?.isNotEmpty() == true -> raw.kind
+                ok -> "claimed"
+                else -> "failed"
+            }
+            checkinLog.add(
+                providerId = providerId,
+                account = uid,
+                ok = ok,
+                amount = raw?.amount ?: 0L,
+                streak = raw?.streak ?: 0,
+                total = raw?.total ?: 0L,
+                message = raw?.message?.ifEmpty { fallbackMessage } ?: fallbackMessage,
+                kind = kind,
+            )
+        }
     }
 
     /** 批量动作的底层执行：不做额度补刷，供 [performAction] 与 [performActionAll] 共用。 */
@@ -1111,7 +1184,16 @@ class GatewayEngine(
     fun pollDeviceAuth(providerId: String, state: String, region: String = ""): DeviceAuthPoll {
         val support = registry.get(providerId) as? DeviceCodeSupport
             ?: return DeviceAuthPoll.Failed("该供应商不支持设备授权登录")
-        val poll = support.pollDeviceAuth(state, region)
+        // ★ 兜底：轮询在 UI 的定时回调里跑，任何 provider 的解析异常都会直接
+        //   崩掉整个 App（实测 Qoder 的 RFC3339 过期时间就崩过一次）。
+        //   这里统一转成 Failed，让「登录失败」是一次可重试的错误，而不是闪退。
+        val poll = try {
+            support.pollDeviceAuth(state, region)
+        } catch (t: Throwable) {
+            if (t is InterruptedException) throw t
+            logWarn("设备授权轮询异常（$providerId）：${t.javaClass.simpleName}: ${t.message}")
+            DeviceAuthPoll.Failed("轮询异常：${t.message ?: t.javaClass.simpleName}")
+        }
         if (poll is DeviceAuthPoll.Success) {
             adopt(providerId, poll.account, "登录")
         } else if (poll is DeviceAuthPoll.Failed) {

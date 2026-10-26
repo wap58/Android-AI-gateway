@@ -409,8 +409,10 @@ private fun ModelRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
+                // 主标题用**真实模型名**（Qwen3.7-Max），内部代号（qmodel_latest）
+                // 退到副标题 —— 用户认的是前者，代号只在复制/排障时才需要。
                 Text(
-                    text = model.fullId,
+                    text = model.model.name.ifEmpty { model.fullId },
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -423,9 +425,10 @@ private fun ModelRow(
             }
             Text(
                 text = buildString {
-                    append(model.model.name)
+                    // 副标题：调用用的完整 id + 上下文长度
+                    append(model.fullId)
                     if (model.model.contextWindow > 0) {
-                        append(" · 上下文 ${model.model.contextWindow}")
+                        append(" · 上下文 ").append(model.model.contextWindow)
                     }
                 },
                 style = MaterialTheme.typography.bodySmall,

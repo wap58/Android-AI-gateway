@@ -62,7 +62,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class LogTab(val label: String) { Calls("调用记录"), Requests("请求日志") }
+private enum class LogTab(val label: String) {
+    Calls("调用记录"),
+    Requests("请求日志"),
+    Checkins("签到"),
+}
 
 private enum class StatusFilter(val label: String) {
     ALL("全部"), SUCCESS("成功"), FAILED("失败"), ABORTED("中断"),
@@ -134,6 +138,7 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     ChoiceChip(LogTab.Calls.label, tab == LogTab.Calls) { tab = LogTab.Calls }
                     ChoiceChip(LogTab.Requests.label, tab == LogTab.Requests) { tab = LogTab.Requests }
+                    ChoiceChip(LogTab.Checkins.label, tab == LogTab.Checkins) { tab = LogTab.Checkins }
                 }
                 // 两个标签下都保留设置入口；面板内容与标签无关（见下方 LogSettings 分组）
                 Row(
@@ -233,6 +238,20 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                             CallRow(record, onClick = { detail = record }, onLongClick = { viewModel.deleteCall(record.id) })
                         }
                     }
+                }
+            } else if (tab == LogTab.Checkins) {
+                val records = state.checkinRecords
+                if (records.isEmpty()) {
+                    item(key = "empty-checkins") {
+                        SectionCard {
+                            EmptyHint(
+                                title = "暂无签到记录",
+                                message = "手动签到或自动签到执行后，这里会记下时间、结果和获得的数量。",
+                            )
+                        }
+                    }
+                } else {
+                    items(records, key = { it.seq }) { r -> SectionCard { CheckinRow(r) } }
                 }
             } else {
                 if (logs.isEmpty()) {

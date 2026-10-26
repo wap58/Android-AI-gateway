@@ -2,6 +2,7 @@ package dev.aigw.core.gateway
 
 import dev.aigw.core.provider.ProviderRegistry
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
+import dev.aigw.core.provider.lingxi.LingxiProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
 import dev.aigw.core.provider.opencode.OpenCodeProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
@@ -70,4 +71,8 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
     // 用户明明只配了 A、却因为这里多出一个而被判成「配了两家」。
     // 账号由 pickAccount 对 [NoAccountSupport] 现场合成。
     registry.register(OpenCodeProvider(nowMillis = { engine.now() }))
+
+    // WPS 灵犀（lingxi.kdocs.cn）：登录态就是一个 wps_sid cookie，
+    // 对话走「建会话 → 会话内 completions」，额度单位是智点。
+    registry.register(LingxiProvider(nowMillis = { engine.now() }))
 }

@@ -325,6 +325,10 @@ private fun MainTabs(
                 state = state,
                 viewModel = viewModel,
                 openProviders = { onTab(Tab.Providers) },
+                openModels = { onSubPage(SubPage.Models) },
+                openCredits = { onSubPage(SubPage.CreditCenter) },
+                openUsage = { onSubPage(SubPage.Usage) },
+                openLogs = { onTab(Tab.Logs) },
                 openTaskCenter = { onSubPage(SubPage.TaskCenter) },
             )
             Tab.Providers -> ProviderListScreen(

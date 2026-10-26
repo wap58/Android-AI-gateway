@@ -97,6 +97,15 @@ interface Provider {
     fun resolveModel(requested: String): String
 
     /** 是否是「非对话用途」的内部条目（开启「只看可用模型」时隐藏）。 */
+    /**
+     * 签到周期的起始小时（本地时间）。
+     *
+     * 0 = 自然日（默认，Trae / WorkBuddy 等都是这样）。
+     * Qoder 的每日 100 Credits 是**每天 10:00 到次日 10:00** 一个周期，
+     * 一个周期只能领一次，所以它返回 10。
+     */
+    val checkinCycleStartHour: Int get() = 0
+
     fun isInternalModel(id: String): Boolean = false
 
     /** 发起一次对话。 */
