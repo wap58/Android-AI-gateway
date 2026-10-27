@@ -43,8 +43,8 @@ android {
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
-        versionCode = 1
-        versionName = "0.3.0"
+        versionCode = 15
+        versionName = "0.3.1"
     }
 
     buildFeatures {
@@ -81,8 +81,12 @@ android {
         }
         // release = 仅由 GitHub Actions 云端构建并发版；本地不产出 release 包。
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // 本地沙箱是 aarch64 + qemu 模拟 x86-64，R8 在这种环境下要跑十几分钟，
+            // 经常把构建拖到超时。本地构建时用 -PnoR8 跳过（APK 会大一些，仅测试用）。
+            // CI 云端是原生 x86-64，不传这个参数，仍然开启混淆。
+            val skipR8 = project.hasProperty("noR8")
+            isMinifyEnabled = !skipR8
+            isShrinkResources = !skipR8
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             if (hasReleaseKeystore) signingConfig = signingConfigs.getByName("release")
         }

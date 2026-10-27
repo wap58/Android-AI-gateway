@@ -63,8 +63,8 @@ import java.util.Date
 import java.util.Locale
 
 private enum class LogTab(val label: String) {
-    Calls("调用记录"),
-    Requests("请求日志"),
+    Calls("调用"),
+    Requests("请求"),
     Checkins("签到"),
 }
 
@@ -152,12 +152,12 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                 ) {
                     Icon(
                         Icons.Filled.Settings,
-                        contentDescription = "日志设置",
+                        contentDescription = "设置",
                         modifier = Modifier.size(16.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = if (showLogSettings) "收起设置" else "日志设置",
+                        text = if (showLogSettings) "收起" else "设置",
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -192,7 +192,7 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                     }
                 }
                 Text(
-                    text = "点卡片看原文 · 长按删除 · 参数在右上「日志设置」里逐项调整",
+                    text = "点卡片看原文 · 长按删除 · 参数在右上「设置」里逐项调整",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -208,7 +208,7 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                     fontWeight = FontWeight.SemiBold,
                 )
                 Text(
-                    text = "网关与上游交互的流水，环形覆盖只保留最近若干条；参数在右上「日志设置」里逐项调整。",
+                    text = "网关与上游交互的流水，环形覆盖只保留最近若干条；参数在右上「设置」里逐项调整。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

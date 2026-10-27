@@ -69,21 +69,26 @@ class WebCookieLoginActivity : ComponentActivity() {
             return
         }
 
+        // 根容器底色用提示条同色：状态栏区域内边距露出的就是这块颜色，
+        // 用白色会在顶部留一条突兀的白边。
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.WHITE)
+            setBackgroundColor(0xFFF4F4F4.toInt())
         }
 
-        // 顶部提示条 + 完成按钮
+        // 底部操作区：提示 + 按钮。
+        // 放底部是因为顶部要留给网页本身（登录页顶部有自己的标题栏），
+        // 而且底部离拇指近，操作更方便。
         val bar = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(32, 32, 32, 32)
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 24, 40, 24)
             setBackgroundColor(0xFFF4F4F4.toInt())
         }
         hintView = TextView(this).apply {
-            text = "登录成功后点右侧「完成」"
-            textSize = 14f
-            setTextColor(0xFF333333.toInt())
+            text = "在下面的页面完成登录，成功后会自动添加账号"
+            textSize = 13f
+            setTextColor(0xFF444444.toInt())
+            setLineSpacing(4f, 1f)
         }
         val hint = hintView
         val doneButton = TextView(this).apply {
@@ -92,24 +97,42 @@ class WebCookieLoginActivity : ComponentActivity() {
             setTextColor(0xFF1A73E8.toInt())
             setPadding(24, 8, 8, 8)
             setOnClickListener {
-                // 手动点「完成」= 把手上有的 cookie 全部存下来
-                val c = collectCookies()
-                if (c.isEmpty()) {
+                // ★ 必须校验：没拿到会话 cookie 时点了「完成」，
+                //   手上只有 csrf / ks_local_token 这类登录页残留，
+                //   存进去就是一个用不了的账号。宁可拒绝并提示。
+                val (kdocs, wps) = collectByDomain()
+                val hasSession = kdocs.containsKey(targetCookie) || wps.containsKey(targetCookie)
+                if (!hasSession) {
                     hintView.textSize = 11f
-                    hintView.text = "一个 cookie 都没读到，请确认是否登录成功"
+                    hintView.text = "还没检测到登录态（没有 $targetCookie）。\n" +
+                        "请先在页面里完成登录，登录成功会自动添加。"
                 } else {
                     done = true
-                    finishWith(toCookieHeader(c))
+                    finishWithBoth(toCookieHeader(kdocs), toCookieHeader(wps))
                 }
             }
         }
         bar.addView(
             hint,
-            LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f),
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ),
         )
-        bar.addView(doneButton)
-        root.addView(bar, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
 
+        // 按钮行：靠右，与提示分开
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = android.view.Gravity.END
+        }
+        actionRow.addView(doneButton)
+        bar.addView(
+            actionRow,
+            LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = 12 },
+        )
         webView = WebView(this).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
@@ -128,19 +151,43 @@ class WebCookieLoginActivity : ComponentActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 probeCount = 0
+                // 首页的登录入口在侧边栏底部，手机上要滑很久才能点到。
+                // 这里自动找一下「登录」按钮并点它，省掉手动找的步骤。
+                // 找不到就什么都不做（用户仍可手动登录）。
+                if (!hasTarget(collectCookies())) {
+                    view?.evaluateJavascript(AUTO_LOGIN_JS, null)
+                }
                 tryFinish()
             }
         }
 
+        // WebView 占据上方全部剩余空间
         root.addView(
             webView,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f),
+        )
+
+        // 底栏最后添加 → 位于 WebView 下方
+        root.addView(
+            bar,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT),
         )
 
         setContentView(
             root,
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
         )
+
+        // ★ 让内容避开状态栏（顶部）和导航栏（底部）。
+        //   没有这层处理时，顶部提示条会顶到屏幕最上沿，和状态栏/通知栏重叠。
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val bars = insets.getInsets(
+                androidx.core.view.WindowInsetsCompat.Type.systemBars() or
+                    androidx.core.view.WindowInsetsCompat.Type.displayCutout(),
+            )
+            v.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
 
         // 想添加**另一个**账号时必须先清掉已登录状态：
         // WebView 的 CookieManager 是全局共享的，WPS 已登录时会直接复用，
@@ -352,6 +399,13 @@ class WebCookieLoginActivity : ComponentActivity() {
      * （参考 lingxi-checkin 的做法——它保存整个 context 的 cookies）。
      * 而且 wps_sid 可能是 HttpOnly，只有 CookieManager 读得到。
      */
+    /**
+     * 收集全部可见 cookie。
+     *
+     * ★ flush() 必须无条件调用：CookieManager 的写入是异步的，
+     *   getCookie() 在 flush 之前读不到刚种下的 wps_sid。
+     *   vc1 一直是对的，中间为了省 I/O 去掉过一次，直接导致登录成功后读不到 cookie。
+     */
     private fun collectCookies(): Map<String, String> {
         val manager = CookieManager.getInstance()
         runCatching { manager.flush() }
@@ -416,6 +470,8 @@ class WebCookieLoginActivity : ComponentActivity() {
 
     /** 把两份凭证都交回去：主用 kdocs（对话专业版），备用 wps.cn（业务接口）。 */
     private fun finishWithBoth(primary: String, secondary: String) {
+        // 交付前刷一次盘，保证 CookieManager 的改动已落到底层存储
+        runCatching { CookieManager.getInstance().flush() }
         val data = android.content.Intent().apply {
             putExtra(EXTRA_RESULT_COOKIE, primary)
             putExtra(EXTRA_RESULT_COOKIE_ALT, secondary)
@@ -462,6 +518,30 @@ class WebCookieLoginActivity : ComponentActivity() {
         private const val MAX_PROBES = 8
 
         /** 桌面 Chrome UA：拿到的是灵犀专业版界面。 */
+        /**
+         * 自动点「登录」按钮。
+         *
+         * 只在有明确意图的文本上点，且要求元素可见；
+         * 找不到就返回 no-login-found，绝不影响页面本身。
+         */
+        private val AUTO_LOGIN_JS = """
+        (function(){
+          try{
+            var els = Array.from(document.querySelectorAll('button,a,div,span'));
+            for (var i=0;i<els.length;i++){
+              var e = els[i];
+              var t = (e.textContent||'').trim();
+              if (t !== '登录' && t !== '立即登录' && t !== '登录/注册') continue;
+              var r = e.getBoundingClientRect();
+              if (r.width <= 0 || r.height <= 0) continue;
+              e.click();
+              return 'clicked';
+            }
+          }catch(err){}
+          return 'no-login-found';
+        })();
+        """.trimIndent()
+
         private const val DESKTOP_UA =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
                 "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

@@ -212,13 +212,18 @@ private fun ConsoleCard(
 ) {
     val gold = LocalAppColors.current.goldStart
     val ctx = LocalContext.current
-    val verName = remember {
+    // 版本号带上 versionCode，方便区分同 versionName 的多次本地构建
+    val versionLabel = remember {
         runCatching {
-            ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName.orEmpty()
+            val pkg = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
+            val name = pkg.versionName.orEmpty()
+            @Suppress("DEPRECATION")
+            val code = pkg.versionCode
+            if (name.isEmpty()) "" else "v$name ($code)"
         }.getOrDefault("")
     }
     SectionCard(modifier = Modifier.staggeredAppear(0)) {
-        SectionHeader("网关状态", action = if (verName.isNotEmpty()) "v$verName" else null)
+        SectionHeader("网关状态", action = versionLabel.ifEmpty { null })
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,

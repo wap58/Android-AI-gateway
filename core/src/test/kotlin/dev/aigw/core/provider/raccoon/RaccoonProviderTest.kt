@@ -26,6 +26,7 @@ class RaccoonProviderTest {
 
     private companion object {
         const val GRANT_PATH = "/api/web/desktop/v1/login/points/grant"
+        const val SETTING_INFO_PATH = "/api/web/office/v3/setting_info"
         const val BILLS_PATH = "/api/web/points/v1/bills"
         const val BALANCE_PATH = "/api/web/points/v1/balance"
     }
@@ -276,38 +277,39 @@ class RaccoonProviderTest {
 
     // ------------------------------------------------------------------ 签到（桌面端登录奖励）
 
+    /**
+     * 上游的每日积分由 `setting_info` 请求触发发放（不是独立的领取接口）。
+     * 这里验证：请求 setting_info 后，若余额涨了，就报「+N 积分」。
+     */
     @Test
-    fun `签到携带桌面端请求头`() {
-        withUpstreamHeaders(GRANT_PATH, """{"code":0,"data":{"granted":true,"popup":{"source":"desktop_login","points":3000}}}""") { base, captured ->
-            RaccoonProvider(host = base).performAction(account(), ACTION_CHECKIN, JsonObject())
-            val headers = captured()
-            // 官方桌面客户端靠这两个头判定「是桌面端」，缺了上游不发放
-            assertEquals("desktop-windows", headers["x-client-platform"]?.firstOrNull(), "缺 X-Client-Platform：$headers")
-            assertTrue(
-                headers["x-client-version"]?.firstOrNull()?.startsWith("v") == true,
-                "缺 X-Client-Version（需带 v 前缀）：$headers",
-            )
+    fun `请求 setting_info 触发发放并汇报积分`() {
+        withUpstreamRoutes(
+            SETTING_INFO_PATH to """{"code":0,"data":{"available_points":6796,"point_grant_popups":[{"points":300,"source":"daily_grant"}]}}""",
+            BALANCE_PATH to """{"code":0,"data":{"points":6496}}""",
+        ) { base ->
+            val result = RaccoonProvider(host = base).performAction(account(), ACTION_CHECKIN, JsonObject())
+            assertTrue(result.ok, result.message)
+            assertTrue(result.amount > 0, "应识别到发放了积分：${result.message}")
+            assertEquals("claimed", result.kind, result.message)
         }
     }
 
+    /**
+     * 已经领过的情况：setting_info 里 point_grant_popups 为空、余额没变，
+     * 必须报「今日已领取」，不能报成签到成功。
+     */
     @Test
-    fun `发放成功时汇报 popup 里的积分`() {
-        val body = """{"code":0,"data":{"granted":true,"popup":{"source":"desktop_login","points":3000,"expire_at":"2026-10-20"}}}"""
-        withUpstreamHeaders(GRANT_PATH, body) { base, _ ->
+    fun `今日已领取时不报成签到成功`() {
+        withUpstreamRoutes(
+            SETTING_INFO_PATH to """{"code":0,"data":{"available_points":6496,"point_grant_popups":[]}}""",
+            BALANCE_PATH to """{"code":0,"data":{"points":6496}}""",
+        ) { base ->
             val result = RaccoonProvider(host = base).performAction(account(), ACTION_CHECKIN, JsonObject())
             assertTrue(result.ok, result.message)
-            assertTrue(result.message.contains("3000"), "积分没从 data.popup.points 取：${result.message}")
-        }
-    }
-
-    @Test
-    fun `未发放时不报成签到成功`() {
-        withUpstreamHeaders(GRANT_PATH, """{"code":0,"data":{"granted":false}}""") { base, _ ->
-            val result = RaccoonProvider(host = base).performAction(account(), ACTION_CHECKIN, JsonObject())
-            assertTrue(result.ok, result.message)
-            assertTrue(
-                result.message.contains("未发放"),
-                "上游明确没发积分，不能报成签到成功：${result.message}",
+            assertEquals("already", result.kind, "今日已领取应标为 already：${result.message}")
+            assertFalse(
+                result.message.contains("领取成功"),
+                "没实际加分不能报成功：${result.message}",
             )
         }
     }
@@ -359,6 +361,28 @@ class RaccoonProviderTest {
     // ------------------------------------------------------------------ 上游响应
 
     /** 起一个临时上游，并把收到的请求头暴露给断言（签到协议头回归用）。 */
+    /** 同时 mock 多个路径（签到会先请求 setting_info，再查余额）。 */
+    private fun withUpstreamRoutes(
+        vararg routes: Pair<String, String>,
+        block: (baseUrl: String) -> Unit,
+    ) {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        for ((path, body) in routes) {
+            server.createContext(path) { exchange ->
+                val bytes = body.toByteArray(Charsets.UTF_8)
+                exchange.responseHeaders.add("Content-Type", "application/json")
+                exchange.sendResponseHeaders(200, bytes.size.toLong())
+                exchange.responseBody.use { it.write(bytes) }
+            }
+        }
+        server.start()
+        try {
+            block("http://127.0.0.1:${server.address.port}")
+        } finally {
+            server.stop(0)
+        }
+    }
+
     private fun withUpstreamHeaders(
         path: String,
         body: String,

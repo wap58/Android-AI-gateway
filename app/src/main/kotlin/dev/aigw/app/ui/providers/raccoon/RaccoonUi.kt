@@ -108,10 +108,15 @@ object RaccoonUi : ProviderUi {
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                ChoiceChip("签到领积分", false) {
+                ChoiceChip("领取积分", false) {
                     actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
                 }
             }
+            Text(
+                text = "上游已改为每天首次访问网页自动发放 300 积分，点按钮可能显示「今日已领取」。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             PointsBillsSection(status, actions)
         }
     }

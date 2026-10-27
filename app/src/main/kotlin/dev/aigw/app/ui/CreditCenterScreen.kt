@@ -28,7 +28,12 @@ fun CreditCenterScreen(state: AppUiState, onOpen: (String) -> Unit, onBack: () -
         subtitle = "按供应商查看额度包",
         leading = { BackButton(onBack) },
     ) {
-        val providers = state.providers.filter { state.accountsOf(it.id).isNotEmpty() }
+        // ★ 只列「有额度概念」的供应商：
+        //   Agnes 这类免费无额度（也没有查询接口）的供应商不该出现在额度中心，
+        //   否则会显示成「额度合计 —」，看着像数据缺失。
+        val providers = state.providers
+            .filter { state.accountsOf(it.id).isNotEmpty() }
+            .filter { dev.aigw.core.provider.ProviderCapability.CREDIT_REFRESH in it.capabilities }
         if (providers.isEmpty()) {
             SectionCard(enterIndex = 0) {
                 EmptyHint("还没有账号", "先去「账号」页添加账号。")

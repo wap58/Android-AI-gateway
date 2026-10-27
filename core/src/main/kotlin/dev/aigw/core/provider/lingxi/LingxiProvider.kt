@@ -150,8 +150,8 @@ class LingxiProvider(
      * 拉取模型与模式。
      *
      * 上游把「模式」和「模型」分开返回，但对调用方来说两者都是可选的 model 值：
-     * - `plans`：plan_pro / plan_max（对话时直接作为 model 传）
-     * - `models`：deepseek-* / qwen3.8_* / GLM-* 等
+     * - `plans`：plan_pro / plan_max —— **场景模式，不进列表**（传上去无法正常对话）
+     * - `models`：deepseek-* / qwen3.8_* / GLM-* 等，这些才是可选模型
      */
     private fun fetchModels(cred: LingxiCredential): List<ProviderModel> {
         var lastError: Exception? = null
@@ -200,21 +200,9 @@ class LingxiProvider(
         val out = mutableListOf<ProviderModel>()
         val seen = mutableSetOf<String>()
 
-        data.getAsJsonArray("plans")?.forEach { el ->
-            val o = runCatching { el.asJsonObject }.getOrNull() ?: return@forEach
-            val key = o.str("key")
-            if (key.isEmpty() || !seen.add(key)) return@forEach
-            out += ProviderModel(
-                id = key,
-                name = o.str("name").ifEmpty { key } + "（模式）",
-                contextWindow = runCatching { o.get("max_context_tokens")?.asLong ?: 0L }.getOrDefault(0L),
-                extra = mapOf(
-                    "desc" to o.str("desc"),
-                    "multiplier" to o.str("multiplier"),
-                    "kind" to "plan",
-                ),
-            )
-        }
+        // ★ plans（plan_pro / plan_max）是**场景模式**，不是可选模型：
+        //   它们是网页端的"任务类型"开关，直接当 model 传上去无法正常对话，
+        //   所以不进模型列表，只暴露 data.models 里的真实模型。
 
         data.getAsJsonArray("models")?.forEach { el ->
             val o = runCatching { el.asJsonObject }.getOrNull() ?: return@forEach

@@ -100,8 +100,19 @@ class CheckinLogStore(
             ),
         )
         while (records.size > capacity) records.removeLast()
+        // 写盘节流：store.write 是「全量重加密 + fsync」，批量签到 10 个账号
+        // 同步写 10 次会把收尾压成几百毫秒。与 RequestLog 保持同样的节流策略。
+        if (now - lastPersistAt >= PERSIST_INTERVAL_MS) {
+            persist()
+            lastPersistAt = now
+        }
+    }
+
+    /** 立即落盘（退出前或需要保证持久化时调用）。 */
+    @Synchronized
+    fun flush() {
         persist()
-        lastPersistAt = now
+        lastPersistAt = nowMillis()
     }
 
     /** 最新在前。 */
@@ -144,6 +155,7 @@ class CheckinLogStore(
     fun clear() {
         records.clear()
         persist()
+        lastPersistAt = nowMillis()
     }
 
     private fun persist() {
@@ -189,6 +201,9 @@ class CheckinLogStore(
 
     companion object {
         const val STORE_KEY = "logs/checkins.json"
+
+        /** 两次写盘的最小间隔。 */
+        private const val PERSIST_INTERVAL_MS = 2_000L
 
         /** 按本地时区把毫秒格式化成 yyyy-MM-dd，用于「同一天」判定。 */
         private val DAY_FORMAT = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())

@@ -155,18 +155,6 @@ interface Provider {
 }
 
 /**
- * 不需要账号的供应商（如 OpenCode 免费通道：凭据是公开哨兵）。
- *
- * 这类供应商不往账号池里塞占位账号——池里的 size 被「用户是否配置过供应商」的判断依赖，
- * 塞占位会让用户明明只配了一家却被判成两家，无前缀请求的路由就跑偏了。
- * 调度时由 [dev.aigw.core.gateway.GatewayEngine.pickAccount] 现场合成一个账号。
- */
-interface NoAccountSupport {
-    /** 合成出来的账号（每次调用可返回同一个，字段固定）。 */
-    fun syntheticAccount(): ProviderAccount
-}
-
-/**
  * 账号有区域之分的供应商（如 WorkBuddy 的国内 cn / 国外 global）。
  *
  * 区域型供应商在模型页拆成多个独立前缀（`codebuddy-cn`、`codebuddy-global`），

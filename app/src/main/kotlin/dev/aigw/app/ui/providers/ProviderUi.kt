@@ -104,6 +104,9 @@ class ProviderUiActions(
     /** 用任意 key 从云端拉模型列表（自定义供应商）。 */
     val onFetchCustomModels: (baseUrl: String, apiKey: String, onResult: (List<String>, String) -> Unit) -> Unit =
         { _, _, _ -> },
+    /** 用系统浏览器打开一个外部链接（注册页、申请 Key 页等）。 */
+    val onOpenUrl: (String) -> Unit = { _ -> },
+
     val onNotice: (String) -> Unit = {},
 )
 

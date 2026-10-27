@@ -1,10 +1,10 @@
 package dev.aigw.core.gateway
 
 import dev.aigw.core.provider.ProviderRegistry
+import dev.aigw.core.provider.agnes.AgnesProvider
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.lingxi.LingxiProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
-import dev.aigw.core.provider.opencode.OpenCodeProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeConstants
 import dev.aigw.core.provider.trae.TraeProvider
@@ -63,14 +63,10 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
         ),
     )
 
-    // OpenCode 免费通道：凭据是公开哨兵 Bearer public，不需要真实账号。
-    //
-    // 作为默认集成的供应商之一，默认启用。
-    // 刻意**不**在池里预建账号：账号池的 size 被「用户是否配置过供应商」的判断依赖
-    // （见 resolveRoute 的 activeProviders.size == 1 分支），塞占位账号会让
-    // 用户明明只配了 A、却因为这里多出一个而被判成「配了两家」。
-    // 账号由 pickAccount 对 [NoAccountSupport] 现场合成。
-    registry.register(OpenCodeProvider(nowMillis = { engine.now() }))
+
+    // Agnes AI：标准 OpenAI 兼容接口，国内/国际两个独立站点，各自的 API Key。
+    // 无签到、无余额可查，限制是每分钟 10 次。
+    registry.register(AgnesProvider(nowMillis = { engine.now() }))
 
     // WPS 灵犀（lingxi.kdocs.cn）：登录态就是一个 wps_sid cookie，
     // 对话走「建会话 → 会话内 completions」，额度单位是智点。

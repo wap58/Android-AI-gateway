@@ -393,25 +393,113 @@ class RaccoonProvider(
     private fun checkin(account: ProviderAccount): ProviderActionResult {
         val credential = parse(account) ?: return ProviderActionResult.failure("凭证无法解析")
         return try {
-            val (status, text) = postJson("$host$PATH_GRANT", "{}", jsonHeaders(credential) + desktopHeaders())
-            if (status !in 200..299) {
-                return ProviderActionResult.failure(extractMessage(text).ifEmpty { "签到失败（HTTP $status）" })
+            // ★★ 上游的每日 300 积分不是「点按钮发奖」，而是**服务端在处理
+            //   setting_info 请求时顺带记账发放**，结果随响应的
+            //   `point_grant_popups` 字段回传。所以"签到"= 请求一次 setting_info。
+            //
+            //   证据（抓包 + 账单 + 前端 bundle 三路交叉）：
+            //   - 账单里 daily_grant 记录的 created_at 落在 setting_info 请求窗口内
+            //   - 前端唯一读 point_grant_popups 的地方就是 setting_info 的回调
+            //   - user_info / points/v1/balance 都不含该字段
+            val before = balanceOf(credential)
+            // ★ 上游现在是「每天首次访问就自动发 300 积分」（网页弹窗提示），
+            //   不是点按钮发奖。所以这里试两条路径：
+            //   1. 网页版的每日发放接口（现在的实际入口）
+            //   2. 老的桌面端 grant 接口（保留，可能仍然有效）
+            var lastMessage = ""
+            // (路径, 附加头, 是否 GET)。setting_info 是 GET，用 POST 会被上游拒。
+            for ((path, extra, isGet) in listOf(
+                // 网页版：GET setting_info 即触发当日发放
+                Triple(PATH_SETTING_INFO, emptyMap<String, String>(), true),
+                // 兜底：老的桌面端 grant 接口（POST）
+                Triple(PATH_GRANT, desktopHeaders(), false),
+            )) {
+                val (status, text) = if (isGet) {
+                    getJson("$host$path", jsonHeaders(credential) + extra)
+                } else {
+                    postJson("$host$path", "{}", jsonHeaders(credential) + extra)
+                }
+                if (status !in 200..299) {
+                    lastMessage = extractMessage(text).ifEmpty { "HTTP $status" }
+                    continue
+                }
+                val data = runCatching {
+                    JsonParser.parseString(text).asJsonObject.objOrNull("data")
+                }.getOrNull()
+                val granted = data?.boolOrNull("granted") == true
+                // setting_info 触发的发放：看点名的 point_grant_popups 数组
+                val popups = data?.arrayOrNull("point_grant_popups")
+                val popupPoints = popups?.sumOf { el ->
+                    val o = runCatching { el.asJsonObject }.getOrNull()
+                    o?.longOrNull("points") ?: o?.longOrNull("amount") ?: 0L
+                } ?: 0L
+                // setting_info 也直接回传当前余额
+                val serverBalance = data?.longOrNull("available_points")
+                val points = maxOf(
+                    popupPoints,
+                    data?.objOrNull("popup")?.firstLong("points")
+                        ?: data?.firstLong("points")
+                        ?: data?.firstLong("points_added")
+                        ?: 0L,
+                )
+                val message = extractMessage(text)
+
+                // 真实判据：优先用 setting_info 直接回传的余额，没有再单独查
+                val after = serverBalance ?: balanceOf(credential)
+                val delta = if (before != null && after != null) after - before else 0L
+                if (delta > 0) {
+                    return ProviderActionResult(
+                        ok = true,
+                        message = "领取成功，+$delta 积分（余额 $after）",
+                        amount = delta,
+                        total = after ?: 0L,
+                        kind = "claimed",
+                    )
+                }
+
+                // 余额没涨：看响应里有没有给积分数（有些情况会直接返回数量）
+                if (points > 0) {
+                    return ProviderActionResult(
+                        ok = true,
+                        message = "领取成功，+$points 积分",
+                        amount = points,
+                        kind = "claimed",
+                    )
+                }
+
+                if (granted || message.isNotEmpty()) {
+                    lastMessage = message.ifEmpty { "今日已领取" }
+                }
+                // 诊断：把原始响应带出来，便于判断「成功但 0 分」到底缺了什么
+                if (lastMessage.isEmpty()) {
+                    lastMessage = "原始响应：" + text.take(300)
+                }
             }
-            val data = runCatching { JsonParser.parseString(text).asJsonObject.objOrNull("data") }.getOrNull()
-            val granted = data?.boolOrNull("granted") == true
-            val points = data?.objOrNull("popup")?.firstLong("points") ?: 0L
-            val message = extractMessage(text)
-            ProviderActionResult.success(
-                when {
-                    granted && points > 0 -> "签到成功，+$points 积分"
-                    granted -> message.ifEmpty { "签到成功" }
-                    message.isNotEmpty() -> message
-                    else -> "本次未发放积分（可能今日已领取）"
+            ProviderActionResult(
+                ok = true,
+                message = lastMessage.ifEmpty {
+                    "今日已领取（每日首次访问网页时自动发放）" +
+                        if (before != null) "，当前余额 $before" else ""
                 },
+                total = before ?: 0L,
+                kind = "already",
             )
         } catch (e: Exception) {
-            ProviderActionResult.failure(e.message ?: "签到失败")
+            ProviderActionResult.failure(e.message ?: "领取失败")
         }
+    }
+
+    /** 只取余额数字，失败返回 null（用于签到前后对比）。 */
+    private fun balanceOf(credential: Credential): Long? = try {
+        val (status, text) = getJson("$host$PATH_BALANCE", jsonHeaders(credential))
+        if (status !in 200..299) {
+            null
+        } else {
+            // 与 creditInfo 用同一套字段名，避免两处口径漂移
+            envelopeData(text)?.let { d -> BALANCE_POINT_KEYS.firstNotNullOfOrNull { d.longOrNull(it) } }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /** 积分流水（`/api/web/points/v1/bills`），最近 [POINTS_BILLS_LIMIT] 条。 */
@@ -671,8 +759,17 @@ class RaccoonProvider(
         /** 桌面端登录奖励（不是每日签到）。 */
         const val PATH_GRANT = "/api/web/desktop/v1/login/points/grant"
 
+
         /** 积分流水明细。 */
         const val PATH_BILLS = "/api/web/points/v1/bills"
+
+        /**
+         * 每日积分发放的触发接口。
+         *
+         * 上游没有独立的"领取"接口：服务端在处理这个请求时顺带记账发放当日积分，
+         * 结果放在响应的 `point_grant_popups` 里。请求一次即可。
+         */
+        const val PATH_SETTING_INFO = "/api/web/office/v3/setting_info?lang=zh"
 
         /** 桌面客户端标识：上游只给「官方桌面端」发登录奖励，伪装成 Windows 桌面端（与 [CLIENT_UA] 一致）。 */
         const val CLIENT_PLATFORM = "desktop-windows"

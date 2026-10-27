@@ -36,7 +36,14 @@ object LingxiUi : ProviderUi {
 
     override fun description(): String = "金山办公灵犀，网页登录即可，覆盖 DeepSeek/Kimi/GLM/Qwen 等"
 
-    /** 登录页与要抓的 cookie。 */
+    /**
+     * 登录页与要抓的 cookie。
+     *
+     * ★ 必须用 lingxi.kdocs.cn 首页，不能换成 account.wps.cn 的登录地址。
+     *   实测：用 account.wps.cn 那个带 cb 参数的地址，登录完成后页面不会
+     *   自动跳回 lingxi.kdocs.cn，wps_sid 种不到业务域上，一直读不到凭证。
+     *   首页的登录入口藏在侧边栏底部，确实不好找，但那是唯一能正确种 cookie 的路径。
+     */
     private const val LOGIN_URL = "https://lingxi.kdocs.cn/"
     private const val COOKIE_HOST = "lingxi.kdocs.cn"
     private const val COOKIE_NAME = "wps_sid"

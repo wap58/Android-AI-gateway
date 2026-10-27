@@ -69,7 +69,17 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
             return@PageScaffold
         }
 
-        for (info in state.providers) {
+        // ★ 只列有额度/签到概念的供应商。
+        //   Agnes 这类免费且无余额可查的供应商原样列出只会显示「额度 —」，
+        //   看着像数据缺失；它们也没有签到，放进任务中心没有意义。
+        val shown = state.providers.filter {
+            it.capabilities.any { c ->
+                c == dev.aigw.core.provider.ProviderCapability.CREDIT_REFRESH ||
+                    c == dev.aigw.core.provider.ProviderCapability.CHECKIN ||
+                    c == dev.aigw.core.provider.ProviderCapability.TASKS
+            }
+        }
+        for (info in shown) {
             val accounts = state.accountsOf(info.id)
             if (accounts.isEmpty()) continue
             SectionCard(enterIndex = 2) {

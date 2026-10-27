@@ -147,7 +147,9 @@ object CodeBuddyUi : ProviderUi {
     @Composable
     private fun AccountRegionSection(global: Boolean, accounts: List<AccountStatus>, actions: ProviderUiActions) {
         val current = if (global) CodeBuddyProvider.REGION_GLOBAL else CodeBuddyProvider.REGION_CN
-        val scoped = remember(accounts, current) { accounts.filter { actions.regionOf(id, it.uid) == current } }
+        // 读快照里的 region（随账号状态下发），不要实时查 engine：
+        // 两个数据源刷新不同步，会出现「账号时有时无」。
+        val scoped = remember(accounts, current) { accounts.filter { it.region == current } }
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (scoped.isEmpty()) {
                 SectionCard(enterIndex = 1) {
@@ -193,7 +195,7 @@ object CodeBuddyUi : ProviderUi {
                     )
                 }
                 // 国际版（workbuddy.ai）没有签到制度与成长中心，只给国内账号渲染这两个入口
-                if (actions.regionOf(id, status.uid) != CodeBuddyProvider.REGION_GLOBAL) {
+                if (status.region != CodeBuddyProvider.REGION_GLOBAL) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         ChoiceChip("签到", false) {
                             actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())

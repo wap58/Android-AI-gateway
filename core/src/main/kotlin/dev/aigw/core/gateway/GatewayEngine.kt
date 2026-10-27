@@ -190,7 +190,7 @@ class GatewayEngine(
      * 是否注册内置供应商。
      *
      * 单元测试传 false：它们是针对「自己注册的那几家」写的，
-     * 内置供应商（尤其免账号、永远可调度的 OpenCode）会改变候选集合，
+     * 内置供应商会改变候选集合，
      * 让「只配一家时由它接管」这类用例失去意义。
      */
     registerBuiltins: Boolean = true,
@@ -603,6 +603,7 @@ class GatewayEngine(
             server?.stop()
             server = null
             requestLog.flush()
+            runCatching { checkinLog.flush() }
             log("网关已停止")
         }
     }
@@ -1534,15 +1535,9 @@ class GatewayEngine(
         return Route(fallback, model)
     }
 
-    /**
-     * 该供应商是否「可调度」：已启用，且要么池里有账号，要么它本身免账号。
-     *
-     * 免账号供应商（OpenCode 免费通道）池里永远是空的，
-     * 直接用 `pool.size() > 0` 判断会把它误判成「没有账号」而永远选不中。
-     */
+    /** 该供应商是否「可调度」：已启用且池里有账号。 */
     private fun isDispatchable(providerId: String): Boolean {
         if (!providerSettings(providerId).enabled) return false
-        if (registry.get(providerId) is dev.aigw.core.provider.NoAccountSupport) return true
         return pool.size(providerId) > 0
     }
 
@@ -1571,13 +1566,6 @@ class GatewayEngine(
      * 在指定供应商中选号；[region] 非空时只选属于该区域且处于可用状态的账号中余额最高者。
      */
     fun pickAccount(providerId: String, exclude: Set<String> = emptySet(), region: String? = null): ProviderAccount? {
-        // 免账号供应商（OpenCode 免费通道）：池里没有账号也能调度，现场合成一个。
-        // 放在最前面：它优先级最高，不受 pool 是否为空影响。
-        val noAccount = registry.get(providerId) as? dev.aigw.core.provider.NoAccountSupport
-        if (noAccount != null) {
-            val synthetic = noAccount.syntheticAccount()
-            return if (synthetic.uid in exclude) null else synthetic
-        }
         if (region == null) return pool.pick(providerId, exclude)
         val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport ?: return pool.pick(providerId, exclude)
         // 一次取状态快照（单次加锁），避免对每个账号各加一次读锁
