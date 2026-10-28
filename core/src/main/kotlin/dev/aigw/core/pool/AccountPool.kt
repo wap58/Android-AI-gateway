@@ -34,6 +34,8 @@ data class AccountStatus(
      * 会出现「账号时有时无」。
      */
     val region: String = "",
+    /** 使用优先级：越大越先用。界面据此显示「优先」标记与 ↑↓ 按钮。 */
+    val priority: Int = 0,
 ) {
     val usable: Boolean get() = !disabled && enabled
 }
@@ -50,6 +52,8 @@ data class PoolSummary(
 )
 
 private class Entry(var account: ProviderAccount) {
+    /** 使用优先级：数值越大越先用；同级仍按余额。默认 0。 */
+    var priority: Int = 0
     var credits: Long = 0
     var creditsKnown: Boolean = false
     var detail: String = ""
@@ -122,6 +126,31 @@ class AccountPool(
         persistState(account.providerId, account.uid)
     }
 
+    /**
+     * 迁移账号标识：把 [oldUid] 的条目换成 [newAccount]（uid 变了，凭证与状态跟着走）。
+     *
+     * 用在 uid 口径变更后的自愈（如小浣熊曾把 JWT 的 iss 当 uid 导致多账号共用一个 key）。
+     * **先登记新 key 再删旧 key**：中途失败也不会把账号弄丢，最坏是两条并存，用户可手动删。
+     *
+     * @return true 表示真的搬了 key。
+     */
+    fun renameAccount(providerId: String, oldUid: String, newAccount: ProviderAccount): Boolean {
+        if (oldUid == newAccount.uid) {
+            upsert(newAccount)
+            return false
+        }
+        val before = status(providerId, oldUid)
+        upsert(newAccount)
+        if (before != null) {
+            if (!before.enabled) setEnabled(providerId, newAccount.uid, false, before.reason)
+            if (before.creditsKnown) {
+                updateCredits(providerId, newAccount.uid, before.credits, true, before.detail)
+            }
+        }
+        remove(providerId, oldUid)
+        return true
+    }
+
     fun remove(providerId: String, uid: String): Boolean {
         val removed = lock.write {
             val entry = entries.remove(keyOf(providerId, uid)) ?: return@write false
@@ -155,7 +184,11 @@ class AccountPool(
     fun statuses(providerId: String? = null): List<AccountStatus> = lock.read {
         entries.entries
             .filter { providerId == null || it.value.account.providerId == providerId }
-            .sortedBy { it.key }
+            // 优先级高的排前面；同级保持 uid 字典序，上下移动后列表即时可见
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Entry>> { it.value.priority }
+                    .thenBy { it.key },
+            )
             .map { statusOf(it.value) }
     }
 
@@ -234,7 +267,11 @@ class AccountPool(
         for (entry in group) {
             if (entry.account.uid in exclude) continue
             if (!entry.healthy()) continue
-            if (best == null || entry.credits > best.credits) best = entry
+            // 先比优先级（用户手动排序，最高优先），同级再比余额：
+            // 用户把某个号调到最上面，就是希望它先被用，不该被余额更高的号盖掉。
+            val better = best == null || entry.priority > best.priority ||
+                (entry.priority == best.priority && entry.credits > best.credits)
+            if (better) best = entry
         }
         best?.account
     }
@@ -284,6 +321,7 @@ class AccountPool(
         reason = entry.reason,
         disabled = entry.disabled,
         enabled = entry.enabled,
+        priority = entry.priority,
     )
 
     private fun keyOf(providerId: String, uid: String) = "$providerId/$uid"
@@ -303,6 +341,51 @@ class AccountPool(
      * 只重写单个账号意味着「改一个账号」的写放大从整包变成一条记录——
      * Android 侧每次 write 都是一整次文件提交，这里必须精确到 uid。
      */
+    // ---------------------------------------------------------------- 排序
+
+    /**
+     * 调整账号优先级：上移/下移一位（与相邻账号交换；同级时抬一档）。
+     *
+     * 两个账号的优先级都要落盘，且按账号逐个写（[persistState] 是 per-uid 的）：
+     * 锁内只改内存，落盘在锁外，避免持写锁做整文件加密提交。
+     */
+    fun movePriority(providerId: String, uid: String, up: Boolean): Boolean {
+        val changed = lock.write {
+            val group = byProvider[providerId] ?: return@write emptyList<String>()
+            val sorted = group.sortedWith(
+                compareByDescending<Entry> { it.priority }.thenBy { it.account.uid },
+            )
+            val idx = sorted.indexOfFirst { it.account.uid == uid }
+            if (idx < 0) return@write emptyList<String>()
+            val target = idx + (if (up) -1 else 1)
+            if (target !in sorted.indices) return@write emptyList<String>()
+            val a = sorted[idx]
+            val b = sorted[target]
+            if (a.priority == b.priority) {
+                a.priority = b.priority + (if (up) 1 else -1)
+            } else {
+                val tmp = a.priority
+                a.priority = b.priority
+                b.priority = tmp
+            }
+            listOf(a.account.uid, b.account.uid)
+        }
+        if (changed.isEmpty()) return false
+        changed.forEach { persistState(providerId, it) }
+        return true
+    }
+
+    /** 直接设置账号优先级（数值越大越先用）。 */
+    fun setPriority(providerId: String, uid: String, priority: Int): Boolean {
+        val found = lock.write {
+            val entry = entries[keyOf(providerId, uid)] ?: return@write false
+            entry.priority = priority
+            true
+        }
+        if (found) persistState(providerId, uid)
+        return found
+    }
+
     private fun persistState(providerId: String, uid: String) {
         // 同账号落盘串行（[accountIoLock]），并在此刻重读内存状态而非用调用时的旧快照：
         // 于是「排在后面的落盘」读到的必定是当前最新状态，绝不会把更旧的值覆盖到新值上——
@@ -314,6 +397,7 @@ class AccountPool(
     }
 
     private fun stateJson(entry: Entry): JsonObject = JsonObject().apply {
+        addProperty("priority", entry.priority)
         addProperty("credits", entry.credits)
         addProperty("creditsKnown", entry.creditsKnown)
         addProperty("detail", entry.detail)
@@ -328,6 +412,7 @@ class AccountPool(
             val account = runCatching { ProviderAccount.parse(raw) }.getOrNull() ?: continue
             val entry = Entry(account)
             readState(account.providerId, account.uid)?.let { state ->
+                entry.priority = state.get("priority")?.asInt ?: 0
                 entry.credits = state.get("credits")?.asLong ?: 0L
                 entry.creditsKnown = state.get("creditsKnown")?.asBoolean ?: false
                 entry.detail = state.get("detail")?.asString.orEmpty()

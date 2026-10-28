@@ -141,6 +141,7 @@ fun ProviderDetailScreen(
             onRefreshCredits = { id, uid -> viewModel.refreshCredits(id, uid) },
             onAction = { id, uid, action, payload -> viewModel.performAction(id, uid, action, payload) },
             onToggleAccount = { id, uid, enabled -> viewModel.setAccountEnabled(id, uid, enabled) },
+            onMoveAccountPriority = { id, uid, up -> viewModel.moveAccountPriority(id, uid, up) },
             onRemoveAccount = { id, uid -> viewModel.removeAccount(id, uid) },
             onRegionPicked = onRegionChanged,
             onUpdateSecret = { id, uid, secret, notice ->

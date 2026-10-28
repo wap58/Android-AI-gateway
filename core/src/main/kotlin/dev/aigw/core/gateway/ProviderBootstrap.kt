@@ -53,6 +53,8 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
         CodeBuddyProvider(
             region = { engine.providerSettings(CodeBuddyProvider.ID).option("region", CodeBuddyProvider.REGION_CN) },
             nowMillis = { engine.now() },
+            // 接上 hooks：刷新失败从前静默无日志，排查「登录失效」时看不到任何原因
+            hooks = engine.hooks,
         ),
     )
 

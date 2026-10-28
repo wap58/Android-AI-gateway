@@ -434,6 +434,52 @@ private fun ModelRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // 能力标记：只有供应商明确给了才显示，缺就不渲染（不猜）。
+            // 各家写 extra 的口径不统一（Loomy 写 tool_call="1"，CodeBuddy 写 tools="true"），
+            // 同义 key 与两种真假写法都认下，否则能力存在却显示不出来。
+            val extra = model.model.extra
+            fun flag(vararg keys: String): Boolean = keys.any { key ->
+                val v = extra[key]?.trim()?.lowercase()
+                v == "true" || v == "1"
+            }
+            val tags = buildList {
+                if (flag("reasoning")) add("思考")
+                if (flag("search", "web_search", "online")) add("联网")
+                if (flag("vision", "image", "attachment")) add("识图")
+                if (flag("tools", "tool_call", "toolcall")) add("工具")
+                extra["maxOutput"]?.takeIf { it.isNotBlank() }?.let { add("输出上限 $it") }
+                extra["vendor"]?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }
+            if (tags.isNotEmpty()) {
+                Text(
+                    text = tags.joinToString(" · "),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                )
+            }
+
+            // 倍率与限时折扣：供应商已算好（灵犀 multiplier / Trae 积分倍率），不显示等于白算
+            val rateLabel = (extra["rate"] ?: extra["multiplier"])?.takeIf { it.isNotBlank() }
+            if (rateLabel != null) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Text(
+                        text = "倍率 $rateLabel",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    extra["rateDiscount"]?.takeIf { it.isNotBlank() }?.let { discount ->
+                        Text(
+                            text = "限时 $discount",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    }
+                }
+            }
         }
 
         // 按钮左侧显示延迟：<5000ms 绿色，>=5000ms 橙色，失败/超时 红色

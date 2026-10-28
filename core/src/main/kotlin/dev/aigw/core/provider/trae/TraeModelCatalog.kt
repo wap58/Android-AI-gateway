@@ -110,15 +110,29 @@ class TraeModelCatalog(
         const val TTL_MILLIS = 60L * 60 * 1000
         const val FAIL_TTL_MILLIS = 5L * 60 * 1000
 
-        /** 非对话用途的内部条目，开启「只看可用模型」时隐藏。 */
+        /**
+         * 非对话用途的内部条目（开启「只看可用模型」时隐藏）。
+         *
+         * 上游 `config_info_list` 里混了大量占位/内部条目，实测见过的形态：
+         * - `custom_model_*`：占位与用户自定义模型的槽位（placeholder / internal / doubao / llm_txt …）
+         * - `explore_sub_agent_v*` / `browser_use_subagent`：子代理，不是可选模型
+         * - `summary` / `trae-summary`：摘要模型，由 IDE 内部调用
+         *
+         * 用前缀 + 精确名两种规则，避免上游新增变体时又要补一行。
+         */
         private val INTERNAL_IDS = setOf(
             "summary",
+            "trae-summary",
             "browser_use_subagent",
-            "explore_sub_agent_v2",
-            "explore_sub_agent_v13",
             "custom_model_placeholder",
         )
 
-        fun isInternal(id: String): Boolean = id in INTERNAL_IDS
+        private val INTERNAL_PREFIXES = listOf(
+            "custom_model_",
+            "explore_sub_agent",
+        )
+
+        fun isInternal(id: String): Boolean =
+            id in INTERNAL_IDS || INTERNAL_PREFIXES.any { id.startsWith(it) }
     }
 }

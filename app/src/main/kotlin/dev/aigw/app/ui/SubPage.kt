@@ -10,6 +10,9 @@ sealed interface SubPage {
 
     data object Usage : SubPage
 
+    /** 账号导入导出：按供应商与账号备份、迁移凭证。 */
+    data object AccountTransfer : SubPage
+
     /** 任务中心：批量签到与额度刷新。 */
     data object TaskCenter : SubPage
 

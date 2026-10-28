@@ -53,6 +53,7 @@ import java.util.Locale
 class CodeBuddyProvider(
     private val region: () -> String = { REGION_CN },
     private val nowMillis: () -> Long = System::currentTimeMillis,
+    private val hooks: dev.aigw.core.provider.ProviderHooks = dev.aigw.core.provider.ProviderHooks(),
 ) : Provider, DeviceCodeSupport, dev.aigw.core.provider.RegionAwareSupport {
 
     override val id: String = ID
@@ -106,6 +107,15 @@ class CodeBuddyProvider(
 
     override fun openChat(account: ProviderAccount, openAiBody: String): ChatCall {
         val credential = parse(account) ?: return FailedChatCall(401, "凭证无法解析")
+
+        // ★ 已确定过期、且刷新刚连续失败：如实报一个**可重试**的错误。
+        //   不能带着过期 token 打上游——那会拿到 401，被分类成 SESSION_DEAD 把账号硬禁用，
+        //   一次瞬时刷新失败就变成了用户看到的「登录失效」。
+        val streak = synchronized(refreshLock) { refreshFailureStreak[account.uid] ?: 0 }
+        if (shouldShieldExpiredCredential(credential.expiresAt, streak, nowMillis() / 1000)) {
+            return FailedChatCall(503, "凭证已过期且刷新未成功，稍后会自动重试")
+        }
+
         val streaming = isStreaming(openAiBody)
         val model = resolveModel(requestedModel(openAiBody))
         val request = prepareCodeBuddyRequest(openAiBody)
@@ -559,11 +569,26 @@ class CodeBuddyProvider(
     }
 
     /**
+     * 取响应里的 `data` 外层；没有包装时返回顶层对象。
+     */
+    private fun dataOrRoot(obj: JsonObject): JsonObject = obj.objOrNull("data") ?: obj
+
+    /**
      * 成长任务明细：读 `/v2/activity/growth/tasks`，把 `tasks[]` 映射成 [ProviderTask]。
      *
      * 只读，不触发任何领取动作，供任务中心展示「哪些做了、哪些没做」。
      * 国际版（workbuddy.ai）没有成长中心，直接返回空列表。
      */
+    /**
+     * 批量选目标时就会把国际版与企业账号排掉，不会跑完再报错。
+     */
+    override fun supportsAction(account: ProviderAccount, action: String): Boolean {
+        val credential = parse(account) ?: return false
+        if (regionOf(credential) == REGION_GLOBAL) return false
+        if (credential.enterpriseId.isNotEmpty()) return false
+        return true
+    }
+
     override fun taskList(account: ProviderAccount): ProviderTaskListView? {
         val credential = parse(account) ?: return ProviderTaskListView(emptyList(), error = "凭证无法解析")
         if (regionOf(credential) == REGION_GLOBAL) return ProviderTaskListView(emptyList())
@@ -577,8 +602,13 @@ class CodeBuddyProvider(
                     error = failure("成长中心", endpoint(credential), "${chatBase(credential)}$PATH_GROWTH/tasks", status, body),
                 )
             }
-            val obj = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
-            val inPeriod = obj.get("in_period")?.asBoolean ?: false
+            val root = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
+            // ★ 该供应商大部分接口把业务字段包在 {code,msg,data} 里，个别接口直接给顶层对象。
+            //   少了这一步会静默地「什么都读不到」——而且看上去像上游没有数据
+            //   （成长任务中心会显示「活动未开启」、「领取」按钮点了没反应）。
+            val obj = dataOrRoot(root)
+            // 三态：null 表示上游没给这个字段，别当成「活动已结束」
+            val inPeriod = obj.get("in_period")?.takeIf { it.isJsonPrimitive }?.asBoolean
             val array = obj.arrayOrNull("tasks")
                 ?: return ProviderTaskListView(emptyList(), inPeriod = inPeriod)
             val tasks = array.mapNotNull { element ->
@@ -721,17 +751,27 @@ class CodeBuddyProvider(
                     null,
                     refreshHeaders(credential),
                 )
-                if (status !in 200..299) return refreshFailed(uid, nowSeconds)
-                val data = envelopeData(text) ?: return refreshFailed(uid, nowSeconds)
-                val access = data.get("accessToken")?.asString.orEmpty()
-                if (access.isEmpty()) return refreshFailed(uid, nowSeconds)
-                val expiresIn = data.get("expiresIn")?.asLong ?: 0L
+                if (status !in 200..299) {
+                    return refreshFailed(uid, nowSeconds, "HTTP $status" + describeBody(text))
+                }
+                val data = refreshEnvelopeData(text)
+                    ?: return refreshFailed(uid, nowSeconds, "响应不是预期信封" + describeBody(text))
+                // ★ 走 credentialOf 而不是逐字段 get("accessToken")：上游两个站点用过
+                //   camelCase 与 snake_case 两套命名，只认 camelCase 时国际版的刷新会被
+                //   误判成失败 → 冷却期内继续用旧 token → 上游 401 → 账号被硬禁用。
+                val parsed = credentialOf(data)
+                if (parsed.accessToken.isEmpty()) {
+                    return refreshFailed(uid, nowSeconds, "响应里没有 accessToken" + describeBody(text))
+                }
                 val refreshed = credential.copy(
-                    accessToken = access,
-                    refreshToken = data.get("refreshToken")?.asString.orEmpty().ifEmpty { credential.refreshToken },
-                    domain = data.get("domain")?.asString.orEmpty().ifEmpty { credential.domain },
-                    expiresAt = if (expiresIn > 0) nowSeconds + expiresIn else credential.expiresAt,
+                    accessToken = parsed.accessToken,
+                    refreshToken = parsed.refreshToken.ifEmpty { credential.refreshToken },
+                    domain = parsed.domain.ifEmpty { credential.domain },
+                    // ★ 绝不能沿用旧 expiresAt：能走到刷新就说明旧值已临期，沿用会让之后
+                    //   每个请求都再刷一次，刷新频率=请求频率——正是上游风控吊销 token 的触发条件。
+                    expiresAt = resolveRefreshedExpiry(parsed.expiresAt, parsed.accessToken, nowSeconds),
                 )
+                hooks.onVerbose("刷新凭证", text)
                 lastRefreshed = lastRefreshed + (uid to refreshed)
                 if (lastRefreshFailedAt.containsKey(uid)) lastRefreshFailedAt = lastRefreshFailedAt - uid
                 toProviderAccount(refreshed)
@@ -742,10 +782,60 @@ class CodeBuddyProvider(
     }
 
     /** 记录一次刷新失败并返回 null（调用方据此沿用旧凭证/除障）。 */
-    private fun refreshFailed(uid: String, nowSeconds: Long): ProviderAccount? {
+    private fun refreshFailed(uid: String, nowSeconds: Long, detail: String = ""): ProviderAccount? {
+        // 刷新失败从前是静默的（返回 null 而不抛异常），用户只看到「登录失效」却查不到原因；
+        // 这里把状态码与响应片段写进日志，排查时能直接看出是哪一侧的问题。
+        if (detail.isNotEmpty()) hooks.onLog("WorkBuddy 刷新凭证失败（$uid）：$detail")
         lastRefreshFailedAt = lastRefreshFailedAt + (uid to nowSeconds)
+        refreshFailureStreak = refreshFailureStreak + (uid to ((refreshFailureStreak[uid] ?: 0) + 1))
         return null
     }
+
+    /** 连续刷新失败次数（按账号）：用于决定还要不要护着过期凭证。 */
+    private var refreshFailureStreak: Map<String, Int> = emptyMap()
+
+    /**
+     * 刷新响应的 `data`：对 `code` 比对其它端点宽容。
+     *
+     * 其它端点的信封只有 `code == 0` 才算成功；刷新这条不行——有站点回 200 却不带 `code`
+     * （或把 token 平铺在顶层）。一律当失败会让刷新永远失败、账号被反复判成失效。
+     * 带了 `code` 且非 0 仍按失败处理（那确实是业务错误）。
+     */
+    internal fun refreshEnvelopeData(body: String): JsonObject? {
+        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return null
+        val code = obj.get("code")
+        if (code != null && code.takeIf { it.isJsonPrimitive }?.asLong != 0L) return null
+        obj.objOrNull("data")?.let { return it }
+        val looksLikeCredential = obj.get("accessToken") != null || obj.get("access_token") != null
+        return obj.takeIf { looksLikeCredential }
+    }
+
+    /**
+     * 刷新后的绝对过期时间：响应里的绝对时间 → 新 token 的 JWT `exp` → 保守兜底 TTL。
+     */
+    internal fun resolveRefreshedExpiry(responseExpiresAt: Long, accessToken: String, nowSeconds: Long): Long =
+        when {
+            responseExpiresAt > nowSeconds -> responseExpiresAt
+            else -> dev.aigw.core.util.jwtClaimLong(accessToken, "exp")
+                ?: (nowSeconds + REFRESH_FALLBACK_TTL_SECONDS)
+        }
+
+    /**
+     * 是否应该拦住「带过期凭证去打上游」。
+     *
+     * 条件：凭证确实已过期 + 刷新刚失败过 + 连续失败次数没超过上限。
+     * 上限存在的意义：真正被吊销的会话也得能走到 401 → 禁用 → 提醒重新登录，
+     * 不能被这个护盾永久堵住。
+     */
+    internal fun shouldShieldExpiredCredential(expiresAt: Long, streak: Int, nowSeconds: Long): Boolean {
+        if (expiresAt <= 0) return false
+        if (expiresAt > nowSeconds) return false
+        return streak in 1..MAX_SHIELD_STREAK
+    }
+
+    /** 只取响应体前 200 字做日志，避免把整段 SSE 写进日志。 */
+    private fun describeBody(text: String): String =
+        if (text.isEmpty()) "" else "：" + text.take(200).replace("\n", " ")
 
     /**
      * 粘贴凭证 JSON 导入。
@@ -1194,6 +1284,12 @@ class CodeBuddyProvider(
         const val CODE_MODEL_LIMITED = 6004L
 
         /** 刷新失败后的冷却秒数：期间不再重打上游刷新端点。 */
+        /** 连续刷新失败几次之后不再拦过期凭证（把真正的死会话还给 401 路径去禁用+提醒重登）。 */
+        internal const val MAX_SHIELD_STREAK = 2
+
+        /** 刷新响应既没给过期时间、新 token 也不是 JWT 时的兜底有效期（30 分钟）。 */
+        internal const val REFRESH_FALLBACK_TTL_SECONDS = 1800L
+
         const val REFRESH_COOLDOWN_SECONDS = 60L
 
         /**

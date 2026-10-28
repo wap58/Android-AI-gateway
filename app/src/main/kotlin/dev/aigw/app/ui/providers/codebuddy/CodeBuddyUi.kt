@@ -252,7 +252,12 @@ object CodeBuddyUi : ProviderUi {
                 )
             view.tasks.isEmpty() ->
                 Text(
-                    text = if (view.inPeriod) "该账号没有返回任何任务" else "成长活动未开启，暂无可查看的任务",
+                    // 三态：只有上游明确说不在期才说「未开启」，没说就照实说没有任务
+                    text = if (view.inPeriod == false) {
+                        "成长活动未开启，暂无可查看的任务"
+                    } else {
+                        "该账号没有返回任何任务"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

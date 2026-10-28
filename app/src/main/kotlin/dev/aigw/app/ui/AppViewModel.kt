@@ -450,6 +450,12 @@ class AppViewModel(
                 refresh()
             }
         }
+        // 历史遗留的账号标识自愈（如小浣熊早期把 JWT 的 iss 当 uid，导致多账号在池里共用一个 key）：
+        // 后台跑一次，真搬了 key 再刷界面；没搬动就不打扰
+        viewModelScope.launch {
+            val moved = withContext(Dispatchers.IO) { engine.migrateAccounts() }
+            if (moved > 0) refresh()
+        }
         // 调用记录与统计改在引擎后台预载（冷启动不阻塞主线程），就绪后补一次刷新
         engine.setStartupDataReadyListener { refresh() }
         // 模型目录先回填上次的快照：进程重启后不再是一片空白，
@@ -1484,6 +1490,21 @@ class AppViewModel(
 
     // ------------------------------------------------------------------ 账号
 
+    /**
+     * 调整账号使用顺序（上移/下移一位）。
+     *
+     * 已在顶部/底部时**静默返回**而不是报错：这两个按钮常点，
+     * 弹一句「已经在最前面」只是噪音，界面本身已经能看出位置。
+     */
+    fun moveAccountPriority(providerId: String, uid: String, up: Boolean) {
+        viewModelScope.launch {
+            val moved = withContext(Dispatchers.IO) {
+                engine.moveAccountPriority(providerId, uid, up)
+            }
+            if (moved) refresh()
+        }
+    }
+
     fun setAccountEnabled(providerId: String, uid: String, enabled: Boolean) = action {
         engine.setAccountEnabled(providerId, uid, enabled)
         if (enabled) "已启用该账号" else "已停用该账号"
@@ -1493,6 +1514,18 @@ class AppViewModel(
         if (!engine.removeAccount(providerId, uid)) throw IllegalStateException("账号不存在")
         "账号已删除"
     }
+
+    // ------------------------------------------------------------------ 账号导入导出
+
+    /** 导出选中账号的 JSON（含明文凭证）；空集合表示全部。 */
+    fun exportAccountsJson(selection: Set<String>): String = engine.exportAccounts(selection)
+
+    /** 解析导出内容（只读），供导入前预览；格式不对抛错，消息可直接展示。 */
+    fun parseAccountTransfer(json: String) = engine.parseAccountTransfer(json)
+
+    /** 导入勾选的账号；返回逐条结果。 */
+    fun importAccountsJson(json: String, selection: Set<String>, overwrite: Boolean) =
+        engine.importAccounts(json, overwrite, selection)
 
     /**
      * 刷新额度；uid 为空表示刷新该供应商的全部账号。
@@ -1548,7 +1581,10 @@ class AppViewModel(
             .filter { ProviderCapability.CHECKIN in it.capabilities }
             .flatMap { info -> engine.accounts(info.id) }
             // 区域型供应商的国际版没有签到制度（Trae INTL / WorkBuddy global），跳过避免整批报错
+            // 区域型供应商的国际版本来就没有签到，选目标时就排掉，
+            // 而不是批量跑完了才逐个报「国际版没有⋯」
             .filter { account -> account.region != TraeRegion.INTL.id }
+            .filter { account -> engine.supportsAction(account.providerId, account.uid, ACTION_CHECKIN) }
             .map { BatchTarget(it.providerId, it.uid) }
         if (targets.isEmpty()) throw IllegalStateException("还没有支持签到的账号")
         engine.performActionAll(targets, ACTION_CHECKIN, onProgress = onProgress)
@@ -1571,6 +1607,7 @@ class AppViewModel(
         val targets = engine.providers()
             .filter { ProviderCapability.TASKS in it.capabilities }
             .flatMap { info -> engine.accounts(info.id) }
+            .filter { engine.supportsAction(it.providerId, it.uid, ACTION_TASKS) }
             .map { BatchTarget(it.providerId, it.uid) }
         if (targets.isEmpty()) throw IllegalStateException("还没有支持任务的账号")
         engine.performActionAll(targets, ACTION_TASKS, onProgress = onProgress)

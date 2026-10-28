@@ -385,7 +385,8 @@ class GatewayEngine(
                 dev.aigw.core.provider.ProviderCapability.CHECKIN in info.capabilities ->
                     ACTION_CHECKIN
                 dev.aigw.core.provider.ProviderCapability.TASKS in info.capabilities ->
-                    "complete_all_tasks"
+                    // 用通用动作名，别再硬编码供应商私有字符串
+                    dev.aigw.core.provider.ACTION_TASKS
                 else -> continue
             }
             val targets = accounts(info.id).map { BatchTarget(it.providerId, it.uid) }
@@ -717,10 +718,128 @@ class GatewayEngine(
         pool.saveAccount(account.copy(secret = secret))
     }
 
+    // ------------------------------------------------------------------ 账号导入导出
+
+    /**
+     * 导出账号（含明文凭证）。[selection] 是 `providerId/uid` 集合，空集合表示全部。
+     *
+     * 只取当前确实在池里的账号：勾选后又被删掉的不会凭空出现在导出内容里。
+     */
+    fun exportAccounts(selection: Set<String> = emptySet()): String {
+        val all = pool.accounts()
+        val picked = if (selection.isEmpty()) all else all.filter { "${it.providerId}/${it.uid}" in selection }
+        return dev.aigw.core.pool.AccountTransfer.encode(
+            picked.sortedWith(compareBy({ it.providerId }, { it.uid })),
+            nowMillis(),
+        )
+    }
+
+    /**
+     * 导入账号。
+     *
+     * [overwrite] 为 true 时同 (providerId, uid) 的已有账号被覆盖（凭证与昵称），否则跳过。
+     * 未注册的 providerId 不落池，单独报出来——否则会存下一个永远选不了号的死账号。
+     * [selection] 是 `providerId/uid` 集合，空集合表示导入文件里的全部账号。
+     */
+    fun importAccounts(
+        json: String,
+        overwrite: Boolean,
+        selection: Set<String> = emptySet(),
+    ): dev.aigw.core.pool.AccountImportResult {
+        val envelope = dev.aigw.core.pool.AccountTransfer.decode(json)
+        val picked = if (selection.isEmpty()) {
+            envelope.accounts
+        } else {
+            envelope.accounts.filter { "${it.providerId}/${it.uid}" in selection }
+        }
+        val added = ArrayList<String>()
+        val updated = ArrayList<String>()
+        val skipped = ArrayList<String>()
+        val unknown = ArrayList<String>()
+        for (account in picked) {
+            val key = "${account.providerId}/${account.uid}"
+            if (registry.get(account.providerId) == null) {
+                unknown.add(key)
+                continue
+            }
+            val existing = pool.account(account.providerId, account.uid)
+            when {
+                existing == null -> {
+                    pool.upsert(account)
+                    added.add(key)
+                }
+                overwrite -> {
+                    pool.upsert(account)
+                    updated.add(key)
+                }
+                else -> skipped.add(key)
+            }
+        }
+        if (added.isNotEmpty() || updated.isNotEmpty()) {
+            log("账号导入：新增 ${added.size}、覆盖 ${updated.size}、跳过 ${skipped.size}")
+        }
+        return dev.aigw.core.pool.AccountImportResult(
+            added = added,
+            updated = updated,
+            skipped = skipped,
+            unknownProviders = unknown,
+        )
+    }
+
+    /** 解析导出内容（只读、不落池），供导入前预览与勾选。 */
+    fun parseAccountTransfer(json: String): List<ProviderAccount> =
+        dev.aigw.core.pool.AccountTransfer.decode(json).accounts
+
+    /**
+     * 修正历史遗留的账号标识（uid 口径变过时自愈）。启动后调用一次，幂等。
+     *
+     * 逐账号问 provider 是否需要迁移（[Provider.migrateAccount]）：uid 变了就按新 key
+     * 重新登记、删掉旧条目，凭证与账号状态（启用开关、额度）一并跟着走。
+     * provider 未实现迁移时直接跳过。
+     *
+     * @return 实际迁移的账号数。
+     */
+    fun migrateAccounts(): Int {
+        var moved = 0
+        for (account in pool.accounts()) {
+            val provider = registry.get(account.providerId) ?: continue
+            val migrated = try {
+                provider.migrateAccount(account)
+            } catch (e: Exception) {
+                logWarn("账号标识迁移失败（${account.providerId}/${account.uid}）：${e.message}")
+                null
+            } ?: continue
+            if (migrated.uid == account.uid) continue
+            if (pool.renameAccount(account.providerId, account.uid, migrated)) {
+                log("账号标识已迁移：${account.providerId}/${account.uid} → ${migrated.uid}")
+                moved++
+            }
+        }
+        return moved
+    }
+
     fun removeAccount(providerId: String, uid: String): Boolean {
         val removed = pool.remove(providerId, uid)
         if (removed) log("已删除账号：$providerId/$uid")
         return removed
+    }
+
+    /**
+     * 调整账号使用优先级：上移/下移一位。
+     *
+     * 排在前面的账号会被优先选中（同级才比余额），用于「先用某个号」的场景。
+     */
+    /** 该账号是否适用某个批量动作（用于选目标时提前排掉不适用的账号）。 */
+    fun supportsAction(providerId: String, uid: String, action: String): Boolean {
+        val provider = registry.get(providerId) ?: return false
+        val account = pool.account(providerId, uid) ?: return false
+        return runCatching { provider.supportsAction(account, action) }.getOrDefault(true)
+    }
+
+    fun moveAccountPriority(providerId: String, uid: String, up: Boolean): Boolean {
+        val moved = pool.movePriority(providerId, uid, up)
+        if (moved) log("账号顺序已调整：$providerId/$uid ${if (up) "上移" else "下移"}")
+        return moved
     }
 
     fun setAccountEnabled(providerId: String, uid: String, enabled: Boolean) {

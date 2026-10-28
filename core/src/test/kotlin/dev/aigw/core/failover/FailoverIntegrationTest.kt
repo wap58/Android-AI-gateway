@@ -194,7 +194,11 @@ class FailoverIntegrationTest {
         try {
             val (status, resp) = post(server.listeningPort, "my-model")
             assertEquals(400, status, "客户端参数错必须向客户端返回 400")
-            assertTrue(resp.contains("upstream_rejected"))
+            // 从 400 upstream_rejected 改为按真实分类给码：CLIENT → invalid_request
+            assertTrue(
+                resp.contains("invalid_request"),
+                "客户端错误应按分类返回 invalid_request，实际：$resp",
+            )
             assertEquals(1, p1Calls)
             assertEquals(0, p2Calls, "客户端错误绝不能污染备选供应商")
         } finally {

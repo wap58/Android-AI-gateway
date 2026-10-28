@@ -2,6 +2,7 @@ package dev.aigw.core.provider.loomy
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import dev.aigw.core.provider.ACTION_TASKS
 import dev.aigw.core.provider.AggregatedChatCall
 import dev.aigw.core.provider.AuthKind
 import dev.aigw.core.provider.ChatCall
@@ -239,14 +240,40 @@ class LoomyProvider(
                     }
                 }
 
-                ACTION_COMPLETE_ALL_TASKS -> {
+                // 认通用动作名 ACTION_TASKS：UI 的「一键完成新手任务」与批量任务传的都是它。
+                // 从前只认私有的 complete_all_tasks，于是两者都落到 unsupported，
+                // 用户看到「该供应商不支持「tasks」」。旧名保留兼容已发出去的调用。
+                ACTION_TASKS, LEGACY_COMPLETE_ALL_TASKS -> {
                     val pending = taskClient.tasks(loomy.session).tasks.filter { !it.completed }
                     if (pending.isEmpty()) return ProviderActionResult.success("所有任务都已完成")
-                    val lines = pending.map { task ->
-                        val result = taskClient.complete(loomy.session, task.key)
-                        "${task.title}：${if (result.alreadyCompleted) "此前已完成" else "已完成"}"
+
+                    // ★ 逐条容错：从前用 map 逐个提交，第一条被上游拒就抛到外层 catch，
+                    //   整批剩下的不再尝试、已完成的也一并丢掉。现在逐条捕获，
+                    //   分「已完成 / 未能完成」两段回报，任一条失败即 ok=false 但不吞成功明细。
+                    val done = ArrayList<String>()
+                    val failed = ArrayList<String>()
+                    for (task in pending) {
+                        try {
+                            val result = taskClient.complete(loomy.session, task.key)
+                            done.add("${task.title}：${if (result.alreadyCompleted) "此前已完成" else "已完成"}")
+                        } catch (e: Exception) {
+                            failed.add("${task.title}：${e.message?.takeIf { it.isNotBlank() } ?: "失败"}")
+                        }
                     }
-                    ProviderActionResult.success(lines.joinToString("；"))
+
+                    val message = buildString {
+                        if (done.isNotEmpty()) append("已完成 ").append(done.joinToString("；"))
+                        if (failed.isNotEmpty()) {
+                            if (isNotEmpty()) append("。")
+                            append("未能完成 ").append(failed.joinToString("；"))
+                        }
+                    }
+                    ProviderActionResult(
+                        ok = failed.isEmpty(),
+                        message = message.ifEmpty { "没有可提交的任务" },
+                        amount = done.size.toLong(),
+                        kind = if (failed.isEmpty()) "claimed" else "failed",
+                    )
                 }
 
                 else -> ProviderActionResult.unsupported(action)
@@ -311,7 +338,8 @@ class LoomyProvider(
         const val ACTION_REDEEM_INVITE = "redeem_invite"
         const val ACTION_REDEEM_CODE = "redeem_code"
         const val ACTION_COMPLETE_TASK = "complete_task"
-        const val ACTION_COMPLETE_ALL_TASKS = "complete_all_tasks"
+        /** 旧动作名：早期版本用这个，保留兼容。新代码一律用 [ACTION_TASKS]。 */
+        const val LEGACY_COMPLETE_ALL_TASKS = "complete_all_tasks"
 
         /** 中国大陆手机号：11 位、1 开头。 */
         private val CN_PHONE = Regex("1[3-9]\\d{9}")

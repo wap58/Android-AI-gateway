@@ -346,12 +346,24 @@ class RaccoonProvider(
         var nickname = jwtClaim(accessToken, "name")
         var pro = false
         var orgCode = ""
-        val userId = jwtClaim(accessToken, "iss")
+        var userId = ""
         val userInfo = runCatching { fetchUserInfo(accessToken) }.getOrNull()
         if (userInfo != null) {
             nickname = userInfo.firstString("name", "nickname", "nick_name", "username").ifEmpty { nickname }
             pro = userInfo.boolOrNull("pro") == true
             orgCode = firstOrgCode(userInfo)
+            userId = userInfo.firstString("userId", "user_id", "uid", "sub")
+        }
+        // ★ 不能用 JWT 的 iss 当用户 id：iss 是签发方，同站点所有用户同一个值。
+        //   拿它做账号池主键（providerId/uid）会让后登录的账号直接覆盖前一个，
+        //   表现为「小浣熊只能登一个号，登另一个会取代第一个」。
+        //   顺序：user_info 里的用户字段 → JWT 的用户声明 → 由 token 派生。
+        if (userId.isEmpty()) {
+            userId = jwtClaim(accessToken, "user_id", "userId", "uid", "sub")
+        }
+        if (userId.isEmpty()) {
+            // 最后兜底：由 token 派生一个稳定标识（同一 token 恒得同一值）
+            userId = "token-" + accessToken.hashCode().toUInt().toString(16)
         }
 
         val credential = Credential(
@@ -468,7 +480,7 @@ class RaccoonProvider(
                 }
 
                 if (granted || message.isNotEmpty()) {
-                    lastMessage = message.ifEmpty { "今日已领取" }
+                    lastMessage = friendlyCheckinResult(message).ifEmpty { "今日已领取" }
                 }
                 // 诊断：把原始响应带出来，便于判断「成功但 0 分」到底缺了什么
                 if (lastMessage.isEmpty()) {
@@ -486,6 +498,20 @@ class RaccoonProvider(
             )
         } catch (e: Exception) {
             ProviderActionResult.failure(e.message ?: "领取失败")
+        }
+    }
+
+    /**
+     * 上游回执多是英文短词，直接透出对中文用户不友好；认得的翻成中文，
+     * **不认识的原样返回**（不猜、不吞掉上游信息）。
+     */
+    private fun friendlyCheckinResult(raw: String): String {
+        val text = raw.trim()
+        return when (text.lowercase()) {
+            "success", "ok", "true", "succeeded", "successful" -> "签到成功"
+            "already checked in", "already_checkin", "already signed", "already_sign" -> "今日已签到"
+            "not checked in", "not_checkin" -> "今日尚未签到"
+            else -> text
         }
     }
 
@@ -692,6 +718,23 @@ class RaccoonProvider(
             nickname = obj.firstString("nickname", "nickName", "name"),
             orgCode = obj.firstString("orgCode", "org_code"),
         )
+    }
+
+    /**
+     * 修历史遗留的 uid：早期版本把 JWT 的 `iss`（签发方，同站点所有用户同一个值）
+     * 当成了用户 id，于是所有小浣熊账号在池里共用一个 key，后登录的覆盖前一个。
+     *
+     * 只在**能确定**旧 uid 就是那个 iss、且能从 JWT 算出真实用户标识时才返回新账号；
+     * 拿不准一律返回 null，交给用户手动处理，不猜。
+     */
+    override fun migrateAccount(account: ProviderAccount): ProviderAccount? {
+        val credential = parse(account) ?: return null
+        val issuer = jwtClaim(credential.accessToken, "iss")
+        if (issuer.isEmpty() || account.uid != issuer) return null
+        val userId = jwtClaim(credential.accessToken, "user_id", "userId", "uid", "sub")
+        if (userId.isEmpty() || userId == issuer) return null
+        // secret 里的脏 userId 也要一并改过来，否则 refresh 时又会算回旧值
+        return toProviderAccount(credential.copy(userId = userId), existingUid = userId)
     }
 
     private fun toProviderAccount(credential: Credential, existingUid: String = ""): ProviderAccount {

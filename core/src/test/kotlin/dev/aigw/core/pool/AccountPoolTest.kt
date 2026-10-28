@@ -258,6 +258,57 @@ class AccountPoolTest {
         assertTrue(pool.status(TRAE, "a")!!.disabled, "写回凭证不应清掉硬禁用")
     }
 
+    // ---------------------------------------------------------------- 账号优先级
+
+    @Test
+    fun `优先级高的账号先用，同级仍按余额`() {
+        val pool = newPool()
+        pool.upsert(account("a"))
+        pool.upsert(account("b"))
+        pool.updateCredits(TRAE, "a", 10)
+        pool.updateCredits(TRAE, "b", 900)
+        // 余额低但优先级高：用户手动排序的意图要盖过余额
+        pool.setPriority(TRAE, "a", 5)
+        assertEquals("a", pool.pick(TRAE)?.uid)
+        // 同级时回到余额优先
+        pool.setPriority(TRAE, "b", 5)
+        assertEquals("b", pool.pick(TRAE)?.uid)
+    }
+
+    @Test
+    fun `上移下移交换相邻两个账号的优先级`() {
+        val pool = newPool()
+        pool.upsert(account("a"))
+        pool.upsert(account("b"))
+        pool.upsert(account("c"))
+        assertEquals(listOf("a", "b", "c"), pool.statuses(TRAE).map { it.uid })
+        // c 上移一位：与 b 交换，同级时抬一档
+        assertTrue(pool.movePriority(TRAE, "c", up = true))
+        assertEquals(listOf("c", "a", "b"), pool.statuses(TRAE).map { it.uid })
+        assertTrue(pool.statuses(TRAE).first { it.uid == "c" }.priority > 0)
+        // 已在顶部再上移：无变化
+        assertFalse(pool.movePriority(TRAE, "c", up = true))
+        // 下移回去
+        assertTrue(pool.movePriority(TRAE, "c", up = false))
+        assertEquals("a", pool.statuses(TRAE).first().uid)
+    }
+
+    @Test
+    fun `优先级落盘，重开账号池仍在`() {
+        val store = InMemoryKeyValueStore()
+        val pool = newPool(store)
+        pool.upsert(account("a"))
+        pool.upsert(account("b"))
+        pool.updateCredits(TRAE, "b", 900)
+        pool.movePriority(TRAE, "b", up = true)
+        val orderBefore = pool.statuses(TRAE).map { it.uid }
+        assertEquals("b", orderBefore.first())
+        // 用同一个 store 重建：顺序与优先级都要回来
+        val reopened = newPool(store)
+        assertEquals(orderBefore, reopened.statuses(TRAE).map { it.uid })
+        assertEquals("b", reopened.pick(TRAE)?.uid)
+    }
+
     @Test
     fun `未知账号上的操作是空操作`() {
         val pool = newPool()

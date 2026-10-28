@@ -141,6 +141,12 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "通知、电池优化与后台限制",
                 if (state.keepAlive?.allGood == true) "就绪" else "待配置",
             ) { open(SubPage.KeepAlive) }
+            EditorialRow(
+                "",
+                "账号导入导出",
+                "按供应商与账号备份、迁移凭证",
+                "${state.pool.total} 个账号",
+            ) { open(SubPage.AccountTransfer) }
         }
 
         EditorialGroupHeader("", "关于软件")

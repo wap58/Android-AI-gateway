@@ -8,7 +8,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
@@ -34,11 +36,26 @@ fun AccountTitleColumn(
     modifier: Modifier = Modifier,
 ) {
     Column(modifier = modifier) {
-        Text(
-            text = account.nickname.ifEmpty { account.uid },
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = account.nickname.ifEmpty { account.uid },
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            // 优先级 > 0 说明用户手动排过序，标出来才看得出「为什么先用这个号」
+            if (account.priority > 0) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "优先",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(MaterialTheme.shapes.small)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                )
+            }
+        }
         Text(
             text = accountStatusText(account),
             style = MaterialTheme.typography.bodySmall,
@@ -118,6 +135,8 @@ fun AccountCardShell(
     modifier: Modifier = Modifier,
     trailing: (@Composable () -> Unit)? = null,
     extra: @Composable () -> Unit = {},
+    /** 是否显示「使用顺序」上下移动。只有一个账号时没有意义，调用方可传 false。 */
+    showOrder: Boolean = true,
     footer: (@Composable () -> Unit)? = {
         AccountDeleteChipRow(onRemove = { actions.onRemoveAccount(providerId, account.uid) })
     },
@@ -137,7 +156,47 @@ fun AccountCardShell(
             },
         )
         extra()
+        if (showOrder) {
+            AccountOrderRow(
+                account = account,
+                providerId = providerId,
+                actions = actions,
+            )
+        }
         footer?.invoke()
+    }
+}
+
+/**
+ * 账号顺序调整：↑↓ 两个小按钮。
+ *
+ * 排在前面的账号会被优先选中（同级才比余额），用于「先用某个号」的场景。
+ */
+@Composable
+private fun AccountOrderRow(
+    account: AccountStatus,
+    providerId: String,
+    actions: ProviderUiActions,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(
+            text = "使用顺序",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        ChoiceChip("↑", false) { actions.onMoveAccountPriority(providerId, account.uid, true) }
+        ChoiceChip("↓", false) { actions.onMoveAccountPriority(providerId, account.uid, false) }
+        if (account.priority > 0) {
+            Text(
+                text = "优先 ${account.priority}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
     }
 }
 

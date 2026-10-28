@@ -62,6 +62,8 @@ class ProviderUiActions(
     /** 执行供应商专属动作（签到、兑换码等）。 */
     val onAction: (providerId: String, uid: String, action: String, payload: JsonObject) -> Unit = { _, _, _, _ -> },
     val onToggleAccount: (providerId: String, uid: String, enabled: Boolean) -> Unit = { _, _, _ -> },
+    /** 调整账号使用顺序（上移/下移一位）。 */
+    val onMoveAccountPriority: (providerId: String, uid: String, up: Boolean) -> Unit = { _, _, _ -> },
     val onRemoveAccount: (providerId: String, uid: String) -> Unit = { _, _ -> },
     /** 账号凭证级修改（如 Trae 的设备指纹）：直接替换 secret。 */
     val onUpdateSecret: (providerId: String, uid: String, secret: String, notice: String) -> Unit =

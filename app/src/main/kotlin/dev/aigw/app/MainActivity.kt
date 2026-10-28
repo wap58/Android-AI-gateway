@@ -62,6 +62,7 @@ import dev.aigw.app.ui.CustomProviderScreen
 import dev.aigw.app.ui.CreditCenterScreen
 import dev.aigw.app.ui.HomeScreen
 import dev.aigw.app.ui.KeepAliveScreen
+import dev.aigw.app.ui.AccountTransferScreen
 import dev.aigw.app.ui.LogsScreen
 import dev.aigw.app.ui.MeScreen
 import dev.aigw.app.ui.ModelsScreen
@@ -225,6 +226,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 )
 
                 SubPage.Usage -> UsageScreen(state, viewModel) { subPage = null }
+                SubPage.AccountTransfer -> AccountTransferScreen(state, viewModel) { subPage = null }
                 SubPage.TaskCenter -> TaskCenterScreen(state, viewModel) { subPage = null }
                 SubPage.CreditCenter -> CreditCenterScreen(
                     state = state,

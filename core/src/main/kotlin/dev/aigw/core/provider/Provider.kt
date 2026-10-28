@@ -146,12 +146,31 @@ interface Provider {
      */
     fun hosts(): List<String> = emptyList()
 
+    /**
+     * 这个账号是否适用该动作（供应商自报，默认适用）。
+     *
+     * 供批量选目标时调用：区域型供应商的国际版、企业账号本就没有签到/成长中心，
+     * 应在选目标时排掉，而不是批量跑完再逐条报错。
+     */
+    fun supportsAction(account: ProviderAccount, action: String): Boolean = true
+
     /** provider 专属动作（签到、兑换码等）。默认不支持。 */
     fun performAction(account: ProviderAccount, action: String, payload: JsonObject): ProviderActionResult =
         ProviderActionResult.unsupported(action)
 
     /** 粘贴 JSON 凭证导入；不支持则返回 null。 */
     fun importCredentials(raw: String): ProviderAccount? = null
+
+    /**
+     * 修正历史遗留的账号标识（uid 口径变过时自愈）；null 表示无需迁移。
+     *
+     * 引擎启动后会给每个账号问一次：返回的账号若 uid 变了，就按新 uid 重新登记、
+     * 删掉旧条目，凭证与账号状态都保留。
+     *
+     * 实现方只在**能确定**旧值确实是旧口径产物时才返回，拿不准就返回 null——
+     * 宁可留一条等用户手动处理的旧账号，也不去动用户的凭证。
+     */
+    fun migrateAccount(account: ProviderAccount): ProviderAccount? = null
 }
 
 /**
