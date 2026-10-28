@@ -569,9 +569,10 @@ private fun BigNumber(value: String, suffix: String? = null, color: Color = Colo
 
 /** 指标卡底部灰色小备注。 */
 @Composable
-private fun TileNote(text: String) {
+private fun TileNote(text: String, modifier: Modifier = Modifier) {
     Text(
         text = text,
+        modifier = modifier,
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
@@ -595,26 +596,31 @@ private fun ReadinessTile(state: AppUiState, modifier: Modifier) {
     val usable = state.pool.usable
     val percent = if (total > 0) (usable.toFloat() / total * 100).toInt() else 0
     Tile(modifier, "账号就绪") {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                BigNumber(usable.toString(), suffix = "/ $total")
-                TileNote("池内可用账号")
-            }
+        // 数字独占一行：账号变多（10/10、128/128）时与圆环同排会被折行、互相压住
+        BigNumber(usable.toString(), suffix = "/ $total")
+        Spacer(Modifier.height(2.dp))
+        // 说明文字在左、圆环缩到 28dp 放右下角，窄卡片才排得下
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Bottom,
+        ) {
+            TileNote("池内可用账号", modifier = Modifier.weight(1f))
             ReadinessRing(percent, if (total > 0) usable.toFloat() / total else 0f)
         }
     }
 }
 
-/** 环形进度：金色弧 + 灰底环，中间百分比。 */
+/** 环形进度：金色弧 + 灰底环，中间百分比。尺寸压到 28dp，配合右下角小字位。 */
 @Composable
 private fun ReadinessRing(percent: Int, fraction: Float) {
     val ringColor = LocalAppColors.current.goldStart
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
-    Box(modifier = Modifier.size(44.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.fillMaxWidth().height(44.dp)) {
-            val strokeWidth = 4.dp.toPx()
-            val diameter = size.minDimension - strokeWidth
-            val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+    val size = 28.dp
+    Box(modifier = Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(size)) {
+            val strokeWidth = 3.dp.toPx()
+            val diameter = this.size.minDimension - strokeWidth
+            val topLeft = Offset((this.size.width - diameter) / 2f, (this.size.height - diameter) / 2f)
             drawArc(
                 color = trackColor,
                 startAngle = 0f,
@@ -638,7 +644,7 @@ private fun ReadinessRing(percent: Int, fraction: Float) {
         }
         Text(
             text = "$percent%",
-            style = MaterialTheme.typography.labelSmall,
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 7.sp),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
