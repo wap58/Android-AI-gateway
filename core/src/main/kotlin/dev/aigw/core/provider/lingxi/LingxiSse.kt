@@ -89,6 +89,11 @@ internal class LingxiSseTransformer(
         val type = runCatching { obj.get("type")?.asString.orEmpty() }.getOrDefault("")
         val data = obj.get("data")
 
+        // 排障：把上游的未知事件全部留档。模型身份（如是否真的 deepseek-v4.1-flash）
+        // 很可能就藏在被忽略的元信息事件里。确认后删除。
+        if (type !in setOf("reasoning", "text", "text_end", "end")) {
+        }
+
         when (type) {
             "reasoning" -> emitChunk("reasoning_content", textOf(data))
             "text" -> emitChunk("content", textOf(data))

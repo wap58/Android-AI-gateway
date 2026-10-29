@@ -163,16 +163,7 @@ fun ProviderDetailScreen(
             onLoadPointsBills = { id, uid -> viewModel.loadPointsBills(id, uid) },
             onRegenerateDeviceId = { id, uid -> viewModel.regenerateDeviceId(id, uid) },
             onSetDeviceId = { id, uid, value -> viewModel.setDeviceId(id, uid, value) },
-            onOpenUrl = { url ->
-                runCatching {
-                    ctx.startActivity(
-                        android.content.Intent(
-                            android.content.Intent.ACTION_VIEW,
-                            android.net.Uri.parse(url),
-                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                    )
-                }
-            },
+            onOpenUrl = { url -> viewModel.openUrlWithChoice(url) },
             onNotice = { viewModel.notice(it) },
         )
     }

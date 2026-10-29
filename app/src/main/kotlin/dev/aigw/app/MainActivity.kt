@@ -63,6 +63,7 @@ import dev.aigw.app.ui.CreditCenterScreen
 import dev.aigw.app.ui.HomeScreen
 import dev.aigw.app.ui.KeepAliveScreen
 import dev.aigw.app.ui.AccountTransferScreen
+import dev.aigw.app.ui.LoginBrowserDialog
 import dev.aigw.app.ui.LogsScreen
 import dev.aigw.app.ui.MeScreen
 import dev.aigw.app.ui.ModelsScreen
@@ -155,6 +156,15 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
     }
     LaunchedEffect(state.busy) {
         if (state.busy.isNotEmpty()) snackbarHostState.showSnackbar(state.busy)
+    }
+
+    // 登录前选浏览器：同一个上游的多个账号在同一个浏览器里登录会互相顶掉，
+    // 每个账号换一个浏览器就能各自保留 Cookie，不必反复退出重登。
+    if (state.pendingLogin != null) {
+        LoginBrowserDialog(
+            onDismiss = { viewModel.dismissPendingLogin() },
+            onPick = { pkg: String -> viewModel.launchLoginIn(pkg) },
+        )
     }
 
     // 系统返回与页内返回按钮同层级：二级页回它的上级，其余回主 tab

@@ -265,6 +265,14 @@ data class BatchOutcome(
  * 让 Compose 能把接收它的页面当作稳定参数，字段未变时跳过重组。
  */
 @Immutable
+/** 已拿到登录票据、等用户选浏览器打开。 */
+data class PendingLogin(
+    val providerId: String,
+    val url: String,
+    val pollState: String,
+    val region: String,
+)
+
 data class AppUiState(
     val running: Boolean = false,
     val port: Int = GatewaySettings.DEFAULT_PORT,
@@ -290,6 +298,8 @@ data class AppUiState(
     val calls: List<CallRecord> = emptyList(),
     /** 签到历史记录（最新在前）。 */
     val checkinRecords: List<dev.aigw.core.usage.CheckinRecord> = emptyList(),
+    /** 已拿到登录票据、等用户选浏览器。非空时界面弹选择框。 */
+    val pendingLogin: PendingLogin? = null,
     /** 存储中的记录条数（含未载入内存的）。 */
     val storedCalls: Int = 0,
     /** 已拉取的额度包明细，键为 `providerId/uid`。 */
@@ -1280,6 +1290,12 @@ class AppViewModel(
      * 浏览器完成登录后由网关接住回调并落池；WorkBuddy 没有本地回调，
      * 返回轮询用的 state，由 [pollDeviceLogin] 换取 token。
      */
+    /**
+     * 开始浏览器登录：先向引擎要票据，再**让用户选一个浏览器**打开。
+     *
+     * 选浏览器不是偏好问题——多个同上游账号在同一个浏览器里登录会互相顶掉，
+     * 每个账号换一个浏览器就能各自保留 Cookie，不用反复退出重登。
+     */
     fun beginBrowserLogin(providerId: String, region: String = "") {
         viewModelScope.launch {
             _state.value = _state.value.copy(busy = "正在准备登录")
@@ -1289,27 +1305,63 @@ class AppViewModel(
             _state.value = _state.value.copy(busy = "")
             result.fold(
                 onSuccess = { ticket ->
-                    if (!openBrowser(ticket.loginUrl)) {
-                        _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
-                        return@fold
-                    }
-                    if (ticket.pollState.isNotEmpty()) {
-                        // 用票据自带的区域轮询：授权页创建在哪个区域，就只能在该区域查这个 state
-                        pollDeviceLogin(providerId, ticket.pollState, ticket.region)
-                    } else {
-                        _state.value = _state.value.copy(notice = "已在浏览器打开登录页，完成后会自动添加账号")
-                    }
+                    // 交给界面弹选择框；用户选完调 launchLoginIn(browser)
+                    _state.value = _state.value.copy(
+                        pendingLogin = PendingLogin(
+                            providerId = providerId,
+                            url = ticket.loginUrl,
+                            pollState = ticket.pollState,
+                            region = ticket.region,
+                        ),
+                    )
                 },
                 onFailure = { _state.value = _state.value.copy(notice = it.message ?: "打开登录页失败") },
             )
         }
     }
 
-    private fun openBrowser(url: String): Boolean = runCatching {
-        app.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+    /** 用户在浏览器选择框里选定之后真正打开登录页。 */
+    fun launchLoginIn(browserPackage: String) {
+        val pending = _state.value.pendingLogin ?: return
+        _state.value = _state.value.copy(pendingLogin = null)
+        if (!BrowserLauncher.open(app, pending.url, browserPackage)) {
+            _state.value = _state.value.copy(notice = "没有可用的浏览器，无法打开登录页")
+            return
+        }
+        // 纯跳转（申请 Key 等）没有轮询票据，打开就结束
+        if (pending.providerId.isEmpty()) return
+        if (pending.pollState.isNotEmpty()) {
+            // 用票据自带的区域轮询：授权页创建在哪个区域，就只能在该区域查这个 state
+            pollDeviceLogin(pending.providerId, pending.pollState, pending.region)
+        } else {
+            _state.value = _state.value.copy(notice = "已在浏览器打开登录页，完成后会自动添加账号")
+        }
+    }
+
+    fun dismissPendingLogin() {
+        _state.value = _state.value.copy(pendingLogin = null)
+    }
+
+    /**
+     * 纯跳转（申请 API Key、看文档等）：也弹浏览器选择。
+     *
+     * 这类页面通常要登录上游账号，同一上游多个账号同样需要浏览器隔离，
+     * 所以和登录流程共用一套选择框，而不是直接丢给系统默认浏览器。
+     */
+    fun openUrlWithChoice(url: String) {
+        _state.value = _state.value.copy(
+            pendingLogin = PendingLogin(
+                providerId = "",
+                url = url,
+                pollState = "",
+                region = "",
+            ),
         )
-    }.isSuccess
+    }
+
+    /** 用偏好浏览器打开；未指定时走系统默认。 */
+    private fun openBrowser(url: String): Boolean =
+        BrowserLauncher.open(app, url, _state.value.settings.browserPackage)
 
     /**
      * 设备授权（WorkBuddy）：浏览器里登录完成后轮询换取 token，最长 5 分钟。

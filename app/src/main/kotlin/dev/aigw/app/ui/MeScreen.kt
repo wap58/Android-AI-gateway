@@ -522,3 +522,4 @@ private fun concurrencySummary(failover: dev.aigw.core.failover.ModelFailoverSet
         else -> "单账号${concurrency.maxPerAccount}/全局${concurrency.maxGlobal}"
     }
 }
+

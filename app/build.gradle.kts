@@ -43,8 +43,8 @@ android {
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
-        versionCode = 22
-        versionName = "0.3.2"
+        versionCode = 1
+        versionName = "0.3.3"
     }
 
     buildFeatures {

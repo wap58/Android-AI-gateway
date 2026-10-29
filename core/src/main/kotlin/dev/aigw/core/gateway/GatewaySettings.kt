@@ -31,6 +31,13 @@ data class GatewaySettings(
     /** 「只看可用模型」开关：隐藏上游的非对话内部条目。 */
     val onlyUsableModels: Boolean = false,
     /**
+     * 打开登录页/授权页时使用的浏览器包名；空串表示用系统默认浏览器。
+     *
+     * 各厂商浏览器对 OAuth 跳转、Cookie 域、UA 的处理差别很大（尤其 WPS 灵犀这类
+     * 按 UA 分流站点的），系统默认浏览器未必是能完成登录的那个，所以允许指定。
+     */
+    val browserPackage: String = "",
+    /**
      * 单次请求体上限（MB）。
      *
      * 长对话（如上千轮）会把完整历史塞进 body，8MB 很容易不够用，
@@ -59,6 +66,7 @@ data class GatewaySettings(
         addProperty("allowNoKey", allowNoKey)
         addProperty("exposeLan", exposeLan)
         addProperty("onlyUsableModels", onlyUsableModels)
+        if (browserPackage.isNotEmpty()) addProperty("browserPackage", browserPackage)
         addProperty("maxRequestBodyMb", maxRequestBodyMb)
         addProperty("refreshSkewSeconds", refreshSkewSeconds)
         addProperty("maxRotate", maxRotate)
@@ -108,6 +116,7 @@ data class GatewaySettings(
                 allowNoKey = obj.boolOr("allowNoKey", defaults.allowNoKey),
                 exposeLan = obj.boolOr("exposeLan", defaults.exposeLan),
                 onlyUsableModels = obj.boolOr("onlyUsableModels", defaults.onlyUsableModels),
+                browserPackage = obj.strOr("browserPackage", defaults.browserPackage),
                 maxRequestBodyMb = obj.intOr("maxRequestBodyMb", defaults.maxRequestBodyMb)
                     .coerceIn(MIN_MAX_BODY_MB, MAX_MAX_BODY_MB),
                 refreshSkewSeconds = clampRefreshSkew(obj.longOr("refreshSkewSeconds", defaults.refreshSkewSeconds)),

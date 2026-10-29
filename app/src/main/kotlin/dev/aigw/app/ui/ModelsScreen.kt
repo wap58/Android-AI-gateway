@@ -44,6 +44,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import dev.aigw.core.provider.RoutedModel
 
 /** 模型页：汇总所有供应商的模型（id 带 `provider/` 前缀），按供应商分组展示与流式更新。 */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit)? = null) {
     val context = LocalContext.current
@@ -179,8 +181,14 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
             }
         }
 
-        LazyColumn(
+        // 下拉刷新：与右上角按钮同效（forceRefresh 会先失效各家模型目录缓存）
+        PullToRefreshBox(
+            isRefreshing = state.modelsLoading,
+            onRefresh = { viewModel.refreshModels(forceRefresh = true) },
             modifier = Modifier.weight(1f).fillMaxWidth(),
+        ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -307,6 +315,7 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
                     }
                 }
             }
+        }
         }
 
         failureDetail?.let { reason ->

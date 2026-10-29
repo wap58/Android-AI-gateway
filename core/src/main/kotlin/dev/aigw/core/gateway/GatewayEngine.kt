@@ -1483,14 +1483,27 @@ class GatewayEngine(
      * 点进去必然调用失败，列出来只会误导用户。
      */
     private fun fetchProviderModels(provider: Provider): ProviderModelsChunk {
-        return try {
+        val chunk = try {
             val regionAware = provider as? dev.aigw.core.provider.RegionAwareSupport
-                ?: return fetchWholeProviderModels(provider)
-            fetchRegionalModels(provider, regionAware)
+                ?: return pruneAutoModels(fetchWholeProviderModels(provider))
+            pruneAutoModels(fetchRegionalModels(provider, regionAware))
         } catch (e: Exception) {
             logWarn("拉取模型目录失败（${provider.id}）：${e.message}")
-            ProviderModelsChunk(provider.id, emptyList(), e.message ?: "拉取失败")
+            return ProviderModelsChunk(provider.id, emptyList(), e.message ?: "拉取失败")
         }
+        return chunk
+    }
+
+    /**
+     * 剔除「自动选模型」这类官方场景条目。
+     *
+     * `auto` / `Auto` / `default-model` 是官方客户端的**场景选项**——由服务端按账号
+     * 权益和任务类型挑一个模型。第三方反代拿不到那套上下文，选了只会落到默认模型，
+     * 让用户误以为能切。列表里直接不展示。
+     */
+    private fun pruneAutoModels(chunk: ProviderModelsChunk): ProviderModelsChunk {
+        val kept = chunk.models.filterNot { AUTO_MODEL_IDS.contains(it.model.id.trim().lowercase()) }
+        return if (kept.size == chunk.models.size) chunk else chunk.copy(models = kept)
     }
 
     /**
@@ -1920,6 +1933,14 @@ class GatewayEngine(
     }
 
     private companion object {
+        /**
+         * 官方「自动选模型」的场景条目 ID（小写比较）。
+         *
+         * 官方客户端由服务端按账号权益与任务类型挑模型；第三方反代没有那套上下文，
+         * 选中后只会落到默认模型，因此不在列表里展示。
+         */
+        val AUTO_MODEL_IDS = setOf("auto", "default-model", "trae-auto-model")
+
         const val DAY_MILLIS = 24L * 3600 * 1000
 
         /** 详细日志单条上限：环形日志每条都全量展示，太长会淹没其它日志。 */

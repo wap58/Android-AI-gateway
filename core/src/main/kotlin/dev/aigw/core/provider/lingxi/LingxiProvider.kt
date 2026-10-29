@@ -273,7 +273,7 @@ class LingxiProvider(
         forceNew: Boolean = false,
     ): Attempt {
         val session = if (sessionId.isNullOrEmpty() || forceNew) {
-            createSession(cred) ?: return Fatal(FailedChatCall(502, "创建会话失败"))
+            createSession(cred, model) ?: return Fatal(FailedChatCall(502, "创建会话失败"))
         } else {
             sessionId
         }
@@ -326,13 +326,28 @@ class LingxiProvider(
         }
     }
 
-    private fun createSession(cred: LingxiCredential): String? {
+    /**
+     * 建会话。
+     *
+     * [sessionMode] 是**模型绑定的唯一入口**：上游会忽略请求体里的 `model` 字段
+     * （响应里恒为 `model-s`），真正决定用哪个模型的是会话的 `session_mode`。
+     * 不传就落到默认场景模式那两个（不扣智点），这也是之前「选了自定义模型却不扣点、
+     * 回答质量不对」的原因。
+     */
+    private fun createSession(cred: LingxiCredential, sessionMode: String = ""): String? {
+        val body = if (sessionMode.isEmpty()) {
+            "{}"
+        } else {
+            com.google.gson.JsonObject().apply {
+                addProperty("session_mode", sessionMode)
+            }.toString()
+        }
         val conn = runCatching {
             HttpSupport.open(
                 url = LingxiConstants.SESSIONS_URL,
                 method = "POST",
                 headers = completionJsonHeaders(cred.chatCookie),
-                body = "{}",
+                body = body,
                 connectTimeoutMs = CONNECT_TIMEOUT_MS,
                 readTimeoutMs = READ_TIMEOUT_MS,
             )
