@@ -288,6 +288,10 @@ class CodeBuddyProvider(
         val headers = billingHeaders(credential)
         val parts = ArrayList<String>()
 
+        // ★ 先做「完成类」任务（上报/对话/事件链），再走领取链。
+        //   顺序反了的话，任务还没达标，领取必然拿不到奖励。
+        runAutoTasks(credential, parts)
+
         claimGiftAndCompensation(credential, base, headers, parts)
         adoptBuddy(credential, base, headers, parts)
         redeemStreak(credential, base, headers, parts)
@@ -301,6 +305,86 @@ class CodeBuddyProvider(
             if (parts.isEmpty()) "成长中心没有可领取的内容" else parts.joinToString("；"),
         )
     }
+
+    /**
+     * 跑「完成类」任务：对话上报、应用事件、模型体验等。
+     *
+     * 判据来自 `linguo2625469/workbuddy2api-panel` 的实测结论——这些任务
+     * 本质是**事件上报**，不是真的要在客户端点一遍。整体失败不影响后续领取链。
+     */
+    private fun runAutoTasks(credential: Credential, parts: MutableList<String>) {
+        runCatching {
+            val bill = chatBase(credential)
+            // desktop=true 时走桌面指纹头（copilot 域），false 走普通 CLI 头
+            fun doPost(path: String, body: String, desktop: Boolean): Pair<Int, String> =
+                if (desktop) {
+                    postJson("$bill$path", credential, body, desktopHeaders(credential, bill))
+                } else {
+                    postJson("$bill$path", credential, body, billingHeaders(credential))
+                }
+
+            val list = fetchTasks(credential) ?: return@runCatching
+            if (list.isEmpty()) return@runCatching
+
+            val runner = CodeBuddyAutoTask(
+                chatBaseUrl = bill,
+                accessToken = credential.accessToken,
+                uid = credential.uid.ifEmpty { "unknown" },
+                nickname = credential.nickname.ifEmpty { "user" },
+                post = ::doPost,
+            )
+            val outcomes = runner.runAll(list)
+            val done = outcomes.filter { it.ok && !it.detail.contains("跳过") }
+            val failed = outcomes.filter { !it.ok }
+            if (done.isNotEmpty()) {
+                parts.add("自动完成 " + done.size + " 项（" + done.joinToString("、") { it.title } + "）")
+            }
+            if (failed.isNotEmpty()) {
+                parts.add("未完成 " + failed.joinToString("、") { it.title + ":" + it.detail.take(40) })
+            }
+        }
+    }
+
+    /**
+     * 桌面客户端指纹头。
+     *
+     * 上游对 `需电脑端` 类任务的判据不是独立端点，而是**同一 /v2/report 上的客户端指纹**：
+     * 带这套头 + 桌面事件字段才计入，否则照样回 200 但静默丢弃
+     * （原项目抓包实测：WorkBuddy Desktop 5.5.6）。
+     */
+    private fun desktopHeaders(credential: Credential, base: String): Map<String, String> = buildMap {
+        put("Authorization", "Bearer " + credential.accessToken)
+        put("Accept", "application/json, text/plain, */*")
+        put("Content-Type", "application/json;charset=UTF-8")
+        put("User-Agent", "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1")
+        put("X-Domain", base)
+        put("X-Product", "SaaS")
+        credential.uid.takeIf { it.isNotEmpty() }?.let { put("X-User-Id", it) }
+    }
+
+    /** 直接取任务数组（内部用，失败返回 null）。 */
+    private fun fetchTasks(credential: Credential): List<dev.aigw.core.provider.ProviderTask>? = runCatching {
+        val (status, body) = getJson(
+            "${chatBase(credential)}$PATH_GROWTH/tasks",
+            billingHeaders(credential),
+        )
+        if (status !in 200..299) return@runCatching null
+        val root = com.google.gson.JsonParser.parseString(body).asJsonObject
+        val data = root.getAsJsonObject("data") ?: root
+        val arr = data.getAsJsonArray("tasks") ?: return@runCatching null
+        arr.mapNotNull { el ->
+            val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+            val code = o.get("task_code")?.takeIf { it.isJsonPrimitive }?.asString
+                ?: o.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: return@mapNotNull null
+            dev.aigw.core.provider.ProviderTask(
+                code = code,
+                title = o.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: code,
+                current = o.get("progress")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
+                target = o.get("target")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
+                claimed = o.get("claimed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false,
+            )
+        }
+    }.getOrNull()
 
     /** 新手礼包与补偿：两个独立的一次性领取，各自容错。 */
     private fun claimGiftAndCompensation(
@@ -693,19 +777,20 @@ class CodeBuddyProvider(
                 "{}",
                 billingHeaders(credential),
             )
+            val code = runCatching { JsonParser.parseString(text).asJsonObject.get("code")?.asLong }.getOrNull() ?: -1L
+            val message = extractMessage(text)
+            // ★「今天已签到」上游用 HTTP 400 + code 10001 返回，属于正常状态，不能算失败。
+            //   必须在状态码判断**之前**识别，否则今天第二次点签到就必然报错。
+            if (message.contains("已签到") || message.contains("already")) {
+                return ProviderActionResult.success("今日已签到")
+            }
             if (status !in 200..299) {
                 return ProviderActionResult.failure(
                     failure("签到", endpoint(credential), "${billingBase(credential)}$PATH_CHECKIN", status, text),
                 )
             }
-            val code = runCatching { JsonParser.parseString(text).asJsonObject.get("code")?.asLong }.getOrNull() ?: -1L
             if (code == 0L) return ProviderActionResult.success("签到成功")
-            val message = extractMessage(text)
-            if (message.contains("已签到") || message.contains("already")) {
-                ProviderActionResult.success("今日已签到")
-            } else {
-                ProviderActionResult.failure(message.ifEmpty { "签到失败（code=$code）" })
-            }
+            ProviderActionResult.failure(message.ifEmpty { "签到失败（code=$code）" })
         } catch (e: Exception) {
             ProviderActionResult.failure(e.message ?: "签到失败")
         }
