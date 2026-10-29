@@ -602,17 +602,26 @@ private fun ReadinessTile(state: AppUiState, modifier: Modifier) {
         // 说明文字在左、圆环缩到 28dp 放右下角，窄卡片才排得下
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.Bottom,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            TileNote("池内可用账号", modifier = Modifier.weight(1f))
-            ReadinessRing(percent, if (total > 0) usable.toFloat() / total else 0f)
+            // 百分比写在文字行里而不是圆环内：圆环内径只有 22dp，
+            // 「100%」四个字符挤在里面会被弧线切掉（显示成「00%」）
+            Text(
+                text = "$percent%",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = LocalAppColors.current.goldStart,
+            )
+            Spacer(Modifier.width(4.dp))
+            TileNote("可用", modifier = Modifier.weight(1f))
+            ReadinessRing(if (total > 0) usable.toFloat() / total else 0f)
         }
     }
 }
 
 /** 环形进度：金色弧 + 灰底环，中间百分比。尺寸压到 28dp，配合右下角小字位。 */
 @Composable
-private fun ReadinessRing(percent: Int, fraction: Float) {
+private fun ReadinessRing(fraction: Float) {
     val ringColor = LocalAppColors.current.goldStart
     val trackColor = MaterialTheme.colorScheme.surfaceContainerHighest
     val size = 28.dp
@@ -642,11 +651,6 @@ private fun ReadinessRing(percent: Int, fraction: Float) {
                 )
             }
         }
-        Text(
-            text = "$percent%",
-            style = MaterialTheme.typography.labelSmall.copy(fontSize = 7.sp),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 

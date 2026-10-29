@@ -38,6 +38,15 @@ internal object TraePayloadModels {
             val cfg = element as? JsonObject ?: continue
             val id = cfg.str("config_name")
             if (id.isEmpty()) continue
+            // ★ 上游自己标了「对用户不可见」的条目：历史版本、子代理、内部别名。
+            //   实测 glm-5.2 / glm-5 / DeepSeek-V4-Flash / computer_use_subagent 等都是这种，
+            //   App 里看不到它们，这里也不该列出来。
+            if (cfg.get("is_invisible_to_user")?.takeIf { it.isJsonPrimitive }?.asBoolean == true) continue
+            // ★ 再加一道本地兜底：上游对这批占位条目并未统一标 invisible，
+            //   实测 `custom_model_*`（gemini / claude / gpt-6 / doubao / kimi …）、
+            //   `explore_sub_agent*`、`summary` 仍会以 invisible=false 返回。
+            //   它们都是「用户自定义模型的槽位」或内部工具，不是可选的对话模型。
+            if (TraeModelCatalog.isInternal(id)) continue
             val display = cfg.objOrNull("display_config")?.str("display_name").orEmpty()
             val context = cfg.long("max_input_tokens").takeIf { it > 0 }
                 ?: cfg.long("maxInputTokens").takeIf { it > 0 }
