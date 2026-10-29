@@ -18,10 +18,12 @@ import java.security.MessageDigest
  */
 internal class CodeBuddyAutoTask(
     private val chatBaseUrl: String,
+    private val webBaseUrl: String,
     private val accessToken: String,
     private val uid: String,
     private val nickname: String,
-    private val post: (path: String, body: String, desktop: Boolean) -> Pair<Int, String>,
+    private val post: (path: String, body: String, mode: String) -> Pair<Int, String>,
+    private val reload: () -> List<ProviderTask>,
 ) {
 
     data class Outcome(val code: String, val title: String, val ok: Boolean, val detail: String)
@@ -71,7 +73,7 @@ internal class CodeBuddyAutoTask(
             merged.putAll(ev)   // 业务字段优先
             toJson(merged)
         }
-        val (status, text) = post("/v2/report", arr, true)
+        val (status, text) = post("/v2/report", arr, "desktop")
         if (status !in 200..299) throw IllegalStateException("桌面上报失败 HTTP $status: ${text.take(80)}")
     }
 
@@ -90,7 +92,7 @@ internal class CodeBuddyAutoTask(
             "machineId" to deriveId("webmachine"),
             "userId" to uid, "userNickname" to nickname,
         )
-        val (status, text) = post("/v2/report", "[" + toJson(ev) + "]", false)
+        val (status, text) = post("/v2/report", "[" + toJson(ev) + "]", "cli")
         if (status !in 200..299) throw IllegalStateException("web 上报失败 HTTP $status: ${text.take(80)}")
     }
 
@@ -123,21 +125,50 @@ internal class CodeBuddyAutoTask(
             }
             val detail = runCatching { a.run(t) }
                 .getOrElse { e -> "失败：" + (e.message ?: e.javaClass.simpleName) }
-            val ok = !detail.startsWith("失败")
-            val claimMsg = if (ok) claim(a.code) else null
-            out.add(Outcome(a.code, t.title, ok, if (claimMsg != null) "$detail；$claimMsg" else detail))
+            if (detail.startsWith("失败")) {
+                out.add(Outcome(a.code, t.title, false, detail))
+                continue
+            }
+            // 上报成功不等于任务点亮：必须**重查进度**确认达标，否则 claim 必然失败
+            // （进度还是 0/N 时上游会拒，表现为「完成失败」，容易误判成上报出错）。
+            val after = runCatching { reload() }.getOrNull()
+            val cur = after?.firstOrNull { it.code == a.code }
+            val reached = cur != null && (cur.claimed || (cur.target > 0 && cur.current >= cur.target))
+            if (!reached) {
+                out.add(Outcome(a.code, t.title, false,
+                    "$detail（进度未变化" + (cur?.let { ": ${it.current}/${it.target}" } ?: "") + "）"))
+                continue
+            }
+            val claimMsg = claim(a.code)
+            out.add(Outcome(a.code, t.title, claimMsg == null,
+                if (claimMsg != null) "$detail；$claimMsg" else "$detail；已领奖"))
         }
         return out
     }
 
+    /**
+     * 领奖。
+     *
+     * ★ 端点必须是 **Web 域** `POST www.workbuddy.cn/activity/growth/tasks/{code}/claim`
+     *   （任务码在**路径**里、无 body、带 `x-client-platform: web`）。
+     *   CLI 域的 `/v2/.../reward/claim` 路径不存在，会一直 400 "task not completed"
+     *   ——原项目注释里专门标注过这是「此前领奖失败的真实原因」。
+     */
     private fun claim(code: String): String? {
-        val (status, text) = post("/v2/activity/growth/tasks/reward/claim",
-            """{"task_code":"${code.replace("\"", "")}"}""", false)
-        if (status !in 200..299) return "领奖失败 HTTP $status"
-        val c = runCatching {
-            com.google.gson.JsonParser.parseString(text).asJsonObject.get("code")?.asLong
-        }.getOrNull() ?: 0L
-        return if (c == 0L) null else "领奖提示：code=$c"
+        val clean = code.replace("\"", "")
+        val (status, text) = post("/activity/growth/tasks/$clean/claim", "", "web")
+        if (status !in 200..299) return "领奖失败 HTTP $status ${text.take(60)}"
+        val obj = runCatching {
+            com.google.gson.JsonParser.parseString(text).asJsonObject
+        }.getOrNull()
+        val data = obj?.getAsJsonObject("data") ?: obj
+        val already = data?.get("already_claimed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false
+        val credit = data?.get("credit")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+        return when {
+            already -> "已领取过"
+            credit > 0 -> "领到 +$credit 积分"
+            else -> null
+        }
     }
 
     private val ACTIONS: List<Action> = listOf(
@@ -149,39 +180,99 @@ internal class CodeBuddyAutoTask(
         Action("Buddy_App_QQ", "上报企鹅教师助手进入链") { buddyApp(it) },
         Action("RichMeow_Chat", "桌面端成功对话事件链", attempt = true) { richMeow(it) },
         Action("Model_chat_GLM5.2", "glm-5.2 模型对话上报", attempt = true) { modelChat(it) },
+        Action("template_5", "使用 5 个模板") { templateUse(it) },
+        Action("playbook_prompt", "灵感案例做同款") { playbookPrompt(it) },
     )
 
-    /** chat_5：补报对话活跃事件（走 billingBase 的 CLI 形状）。 */
+    /**
+     * chat_5：补足「和 AI 聊天 N 次」。
+     *
+     * 必须是**桌面端完整对话事件链**（6 个事件），不是 CLI 形状的单条
+     * `chat_request_send`——后者实测被上游 400 拒（code 10001）。
+     */
     private fun chat5(t: ProviderTask): String {
         val target = if (t.target > 0) t.target else 5L
         val need = target - t.current
         if (need <= 0) return "进度已达标"
         for (i in 0 until need) {
-            val cid = "tyd-chat5-${System.currentTimeMillis()}-$i"
-            val now = System.currentTimeMillis()
-            val ev = mapOf(
-                "event_code" to "chat_request_send", "timestamp" to now, "report_delay" to 0,
-                "mode" to "craft", "conversation_id" to cid, "request_id" to cid,
-                "input_length" to 12, "request_model_id" to "deepseek-v4-flash",
-                "request_model_name" to "DeepSeek V4 Flash", "is_plan" to false,
-                "agent_name" to "default", "agent_type" to "conversation",
-                "present_at" to now, "root_request_id" to cid,
-                "parent_conversation_id" to cid, "user_id" to uid,
-            )
-            val (st, tx) = post("/v2/report", "[" + toJson(ev) + "]", false)
-            if (st !in 200..299) return "失败：上报 HTTP $st ${tx.take(60)}"
-            if (i < need - 1) Thread.sleep(1500)
+            val base = "tyd-${System.currentTimeMillis()}-$i"
+            val cid = "$base-conv"
+            val rid = "$base-req"
+            val mid = "$base-msg"
+            reportDesktop(*desktopChatSequence(cid, rid, mid))
+            if (i < need - 1) Thread.sleep(2000)
         }
-        return "已补报 $need 条对话事件"
+        return "已补报 $need 轮桌面对话"
+    }
+
+    /** 桌面端一次成功对话的完整事件链（照抄客户端形状，缺事件不计数）。 */
+    private fun desktopChatSequence(cid: String, rid: String, mid: String): Array<Map<String, Any>> {
+        val now = System.currentTimeMillis()
+        val modelId = "deepseek-v4-flash"
+        val modelName = "DeepSeek V4 Flash"
+        val asst = "$mid-assistant"
+        fun mk(code: String, extra: Map<String, Any> = emptyMap()): Map<String, Any> {
+            val m = LinkedHashMap<String, Any>()
+            m["eventCode"] = code
+            m.putAll(extra)
+            return m
+        }
+        return arrayOf(
+            mk("agent_task_created", mapOf(
+                "source" to "LOCAL", "name" to "working", "task_target" to "local", "mode" to "craft",
+                "requestModelId" to modelId, "requestModelName" to modelName,
+                "has_repo" to false, "repo_type" to "none", "workspace_type" to "empty",
+                "has_connector" to false, "has_mention" to false, "has_template" to false,
+                "has_expert" to false, "has_skill" to false,
+                "conversationId" to cid, "messageId" to mid, "buddyId" to "", "buddyName" to "",
+            )),
+            mk("chat_message_send", mapOf(
+                "messageId" to asst, "historyCount" to 0, "isContextTruncated" to false,
+                "currentStepCount" to 1, "traceId" to rid, "rootRequestId" to rid,
+                "parentConversationId" to cid, "agentName" to "cli", "agentType" to "main",
+            )),
+            mk("chat_request_send", mapOf(
+                "inputLength" to 24, "isPlan" to false, "isAutoExecuteTerminal" to false,
+                "isAutoModify" to false, "codebaseEnable" to false, "maxToken" to 0,
+                "maxSteps" to 500, "temperature" to 0, "maxRetries" to 0,
+                "mentionContextCount" to 0, "command" to "", "recommendId" to "",
+                "skillId" to "", "skillCount" to 0, "totalCount" to 0,
+                "traceId" to rid, "rootRequestId" to rid, "parentConversationId" to cid,
+                "agentName" to "cli", "agentType" to "main",
+                "codebuddy.session_id" to cid, "codebuddy.conversation_request_id" to rid,
+            )),
+            mk("chat_message_response", mapOf(
+                "messageId" to asst, "responseModelId" to modelId,
+                "inputToken" to 120, "outputToken" to 80, "totalToken" to 200,
+                "cachedTokens" to 0, "cachedWriteTokens" to 0, "cachedMissTokens" to 0,
+                "isSuccessful" to true, "messageErrorCode" to "", "finishReason" to "stop",
+                "firstTokenAt" to now, "traceId" to rid, "conversationId" to cid,
+                "rootRequestId" to rid, "parentConversationId" to cid,
+                "agentName" to "cli", "agentType" to "main",
+                "codebuddy.session_id" to cid, "codebuddy.conversation_request_id" to rid,
+            )),
+            mk("chat_message_status", mapOf(
+                "messageId" to asst, "messageErrorCode" to "0", "traceId" to rid,
+                "rootRequestId" to rid, "parentConversationId" to cid,
+                "agentName" to "cli", "agentType" to "main",
+            )),
+            mk("chat_request_response", mapOf(
+                "mode" to "craft", "toolCallCount" to 0,
+                "inputToken" to 120, "outputToken" to 80, "totalToken" to 200,
+                "cachedTokens" to 0, "cachedWriteTokens" to 0, "cachedMissTokens" to 0,
+                "isSuccessful" to true, "messageErrorCode" to "", "finishReason" to "stop",
+                "rootRequestId" to rid, "parentConversationId" to cid,
+            )),
+        )
     }
 
     /** first_buddy：上报解锁 → 同意协议 → 领养。 */
     private fun firstBuddy(t: ProviderTask): String {
         chat5(ProviderTask(code = "chat_5", title = "chat_5", current = 0, target = 3))
         Thread.sleep(1500)
-        post("/v2/activity/growth/buddy/agreement", "{}", false)
+        post("/v2/activity/growth/buddy/agreement", "{}", "cli")
         Thread.sleep(800)
-        val (status, text) = post("/v2/activity/growth/buddy/first", "{}", false)
+        val (status, text) = post("/v2/activity/growth/buddy/first", "{}", "cli")
         if (status !in 200..299) return "失败：领养 HTTP $status ${text.take(60)}"
         return "已解锁并领养 Buddy"
     }
@@ -269,8 +360,69 @@ internal class CodeBuddyAutoTask(
             "present_at" to now, "root_request_id" to cid,
             "parent_conversation_id" to cid, "user_id" to uid,
         )
-        val (st, tx) = post("/v2/report", "[" + toJson(ev) + "]", false)
+        val (st, tx) = post("/v2/report", "[" + toJson(ev) + "]", "cli")
         if (st !in 200..299) return "失败：上报 HTTP $st ${tx.take(60)}"
         return "已按 glm-5.2 上报对话"
+    }
+
+    /**
+     * template_5：使用 5 个模板。
+     *
+     * 每组 = 完整对话链 + `agent_task_created_with_template` + `template_used`。
+     * 只报 `template_used` 单条不计数（实测：必须挂在一轮合法对话上）。
+     */
+    private fun templateUse(t: ProviderTask): String {
+        val target = if (t.target > 0) t.target else 5L
+        val need = target - t.current
+        if (need <= 0) return "进度已达标"
+        val tpl = listOf("深度研究" to "1", "周报生成" to "2", "竞品分析" to "3",
+            "活动策划" to "4", "代码评审" to "5")
+        for (i in 0 until need) {
+            val (name, id) = tpl[(i % tpl.size).toInt()]
+            val base = "tyd-tpl-${System.currentTimeMillis()}-$i"
+            val cid = "$base-conv"
+            val rid = "$base-req"
+            val chain = desktopChatSequence(cid, rid, "msg-$id").toMutableList()
+            chain.add(mapOf(
+                "eventCode" to "agent_task_created_with_template", "mode" to "working",
+                "isCustomModel" to false, "id" to id, "name" to name, "requestId" to rid,
+            ))
+            chain.add(mapOf("eventCode" to "template_used", "template_id" to id, "task_mode" to "working"))
+            reportDesktop(*chain.toTypedArray())
+            if (i < need - 1) Thread.sleep(1200)
+        }
+        return "已上报 $need 次模板使用"
+    }
+
+    /**
+     * playbook_prompt：灵感案例「做同款」。
+     *
+     * 判据是 `playbook_prompt_send`（Dialog 发送 Prompt），不是卡片曝光/点击。
+     */
+    private fun playbookPrompt(t: ProviderTask): String {
+        val base = "tyd-pb-${System.currentTimeMillis()}"
+        val cid = "$base-conv"
+        val rid = "$base-req"
+        val caseId = "pm-gtm-launch-plan"
+        val caseName = "新产品上市 GTM 发布计划一页纸"
+        val chain = desktopChatSequence(cid, rid, "msg-pb").toMutableList()
+        val payload = mapOf(
+            "id" to caseId, "name" to caseName, "type" to "document",
+            "categoryId" to "", "categoryName" to "",
+        )
+        chain.add(mapOf(
+            "eventCode" to "web_element_click", "pageName" to "playbook_detail",
+            "elementId" to "playbook_ctaClick", "elementName" to caseName, "source" to "discover",
+        ))
+        chain.add(LinkedHashMap<String, Any>().apply {
+            put("eventCode", "playbook_cta_click"); put("source", "discover"); put("position", 0)
+            putAll(payload)
+        })
+        chain.add(LinkedHashMap<String, Any>().apply {
+            put("eventCode", "playbook_prompt_send"); put("conversationId", cid); put("requestId", rid)
+            putAll(payload)
+        })
+        reportDesktop(*chain.toTypedArray())
+        return "已上报灵感做同款事件组"
     }
 }

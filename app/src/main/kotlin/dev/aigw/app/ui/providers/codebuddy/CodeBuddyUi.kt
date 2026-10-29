@@ -200,7 +200,7 @@ object CodeBuddyUi : ProviderUi {
                         ChoiceChip("签到", false) {
                             actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
                         }
-                        ChoiceChip("成长中心", false) {
+                        ChoiceChip("一键任务", false) {
                             actions.onAction(id, status.uid, ACTION_TASKS, JsonObject())
                         }
                     }

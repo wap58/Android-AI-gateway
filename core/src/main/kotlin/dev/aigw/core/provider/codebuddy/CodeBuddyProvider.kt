@@ -302,7 +302,7 @@ class CodeBuddyProvider(
         claimSchoolSeason(credential, base, headers, parts)
 
         return ProviderActionResult.success(
-            if (parts.isEmpty()) "成长中心没有可领取的内容" else parts.joinToString("；"),
+            if (parts.isEmpty()) "没有可完成或可领取的任务" else parts.joinToString("；"),
         )
     }
 
@@ -315,23 +315,27 @@ class CodeBuddyProvider(
     private fun runAutoTasks(credential: Credential, parts: MutableList<String>) {
         runCatching {
             val bill = chatBase(credential)
-            // desktop=true 时走桌面指纹头（copilot 域），false 走普通 CLI 头
-            fun doPost(path: String, body: String, desktop: Boolean): Pair<Int, String> =
-                if (desktop) {
-                    postJson("$bill$path", credential, body, desktopHeaders(credential, bill))
-                } else {
-                    postJson("$bill$path", credential, body, billingHeaders(credential))
-                }
+            // 三种客户端形态各有各的域与头：
+            //   cli     → chatBase + BillingHeaders（对话上报、领养）
+            //   desktop → chatBase + 桌面指纹头（需电脑端类任务）
+            //   web     → webBase + web 头（成长中心领奖 / 页面事件）
+            fun doPost(path: String, body: String, mode: String): Pair<Int, String> = when (mode) {
+                "desktop" -> postJson("$bill$path", credential, body, desktopHeaders(credential, bill))
+                "web" -> postJson("${webBase(credential)}$path", credential, body, webHeaders(credential))
+                else -> postJson("$bill$path", credential, body, billingHeaders(credential))
+            }
 
             val list = fetchTasks(credential) ?: return@runCatching
             if (list.isEmpty()) return@runCatching
 
             val runner = CodeBuddyAutoTask(
                 chatBaseUrl = bill,
+                webBaseUrl = webBase(credential),
                 accessToken = credential.accessToken,
                 uid = credential.uid.ifEmpty { "unknown" },
                 nickname = credential.nickname.ifEmpty { "user" },
                 post = ::doPost,
+                reload = { fetchTasks(credential) ?: emptyList() },
             )
             val outcomes = runner.runAll(list)
             val done = outcomes.filter { it.ok && !it.detail.contains("跳过") }
@@ -1266,6 +1270,32 @@ class CodeBuddyProvider(
     private fun chatBase(credential: Credential?): String = endpoint(credential).chatBase
 
     private fun billingBase(credential: Credential?): String = endpoint(credential).billingBase
+
+    /**
+     * 成长中心 Web 域（领取奖励、页面事件用）。
+     *
+     * 与 CLI 域（copilot.tencent.com）不同：领奖端点是
+     * `POST {web}/activity/growth/tasks/{code}/claim`（任务码在路径、无 body）。
+     */
+    private fun webBase(credential: Credential?): String =
+        if (regionOf(credential) == REGION_GLOBAL) "https://www.workbuddy.ai" else "https://www.workbuddy.cn"
+
+    /** Web 端请求头（对照浏览器实际请求，成长中心页面来源）。 */
+    private fun webHeaders(credential: Credential): Map<String, String> = buildMap {
+        put("Authorization", "Bearer " + credential.accessToken)
+        put("Accept", "application/json, text/plain, */*")
+        put("Content-Type", "application/json")
+        put("Origin", webBase(credential))
+        put("Referer", webBase(credential) + "/profile/growth-center")
+        put("x-client-platform", "web")
+        put("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36")
+        credential.uid.takeIf { it.isNotEmpty() }?.let { put("X-User-Id", it) }
+        credential.enterpriseId.takeIf { it.isNotEmpty() }?.let {
+            put("X-Enterprise-Id", it)
+            put("X-Tenant-Id", it)
+        }
+    }
 
     private fun originFor(credential: Credential?): String = endpoint(credential).origin
 
