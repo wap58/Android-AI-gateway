@@ -51,6 +51,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -70,7 +71,12 @@ import dev.aigw.core.provider.RoutedModel
 /** 模型页：汇总所有供应商的模型（id 带 `provider/` 前缀），按供应商分组展示与流式更新。 */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit)? = null) {
+fun ModelsScreen(
+    state: AppUiState,
+    viewModel: AppViewModel,
+    onBack: (() -> Unit)? = null,
+    highlightModel: String? = null,
+) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     // 按 routePrefix 分组：区域型供应商（如 WorkBuddy 国内与国外）各成一个分组
@@ -85,6 +91,33 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
     // 换成纯值 Set 后 save/restore 不碰快照，问题消失；读取仍在组合作用域，
     // 折叠变化会正常触发列表重建。
     var expanded by rememberSaveable { mutableStateOf(emptySet<String>()) }
+    // 从「今日免费」点进来时定位到指定模型：先展开全部分组，再滚到该项并短暂高亮
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var flashId by remember { mutableStateOf(highlightModel) }
+    // ★ key 只放 highlightModel：带上 models.size 的话，模型刷新一次就会重新定位，
+    //   把已经滚到别处的用户又拽回去。models 为空时由下面的判断直接返回。
+    LaunchedEffect(highlightModel) {
+        val target = highlightModel ?: return@LaunchedEffect
+        // 模型目录可能还没加载完：等到有数据再算位置（只等第一帧有数据的那次）
+        if (state.models.isEmpty()) return@LaunchedEffect
+        // 全部展开，否则目标可能在折叠的分组里，压根没被组合
+        expanded = expanded + grouped.keys
+        // 展开是状态变更，列表项要下一帧才会多出来；先让出一帧再滚动，否则会滚到错误位置
+        kotlinx.coroutines.delay(80)
+        // ★ 索引必须按**渲染时的真实结构**算：每个分组 1 个 header item + N 个模型 item。
+        //   之前用 state.providers 遍历，顺序与 grouped 不一致，导致定位偏移数条。
+        val flat = ArrayList<String>()
+        for ((routePrefix, models) in grouped) {
+            flat.add("header:" + routePrefix)
+            models.forEach { flat.add(it.fullId) }
+        }
+        val index = flat.indexOf(target)
+        if (index >= 0) {
+            listState.animateScrollToItem(index)
+        }
+        delay(2200)
+        flashId = null
+    }
     // 测试失败原文可能很长，行内只展示截断提示，全文点开弹窗查看
     var failureDetail by remember { mutableStateOf<String?>(null) }
 
@@ -188,6 +221,7 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
             modifier = Modifier.weight(1f).fillMaxWidth(),
         ) {
         LazyColumn(
+            state = listState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -291,7 +325,9 @@ fun ModelsScreen(state: AppUiState, viewModel: AppViewModel, onBack: (() -> Unit
                     if (routePrefix !in expanded) continue
                     items(models, key = { it.fullId }) { model ->
                         val testStatus = state.modelTestLatencies[model.fullId]
+                        val highlighted = flashId != null && flashId == model.fullId
                         ModelRow(
+                            highlighted = highlighted,
                             model = model,
                             testStatus = testStatus,
                             exposureEnabled = exposure.filterEnabled,
@@ -385,6 +421,7 @@ private fun ExposureToggle(enabled: Boolean, onClick: () -> Unit) {
 @Composable
 private fun ModelRow(
     model: RoutedModel,
+    highlighted: Boolean = false,
     testStatus: ModelTestStatus?,
     exposureEnabled: Boolean,
     exposed: Boolean,
@@ -394,7 +431,18 @@ private fun ModelRow(
     onShowFailure: (String) -> Unit,
 ) {
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(
+                if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+                else androidx.compose.ui.graphics.Color.Transparent,
+            )
+            .then(if (highlighted) Modifier.border(
+                1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+                MaterialTheme.shapes.medium,
+            ) else Modifier)
+            .padding(if (highlighted) 6.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {

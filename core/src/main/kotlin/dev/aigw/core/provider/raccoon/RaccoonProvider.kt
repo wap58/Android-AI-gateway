@@ -355,15 +355,20 @@ class RaccoonProvider(
             userId = userInfo.firstString("userId", "user_id", "uid", "sub")
         }
         // ★ 不能用 JWT 的 iss 当用户 id：iss 是签发方，同站点所有用户同一个值。
-        //   拿它做账号池主键（providerId/uid）会让后登录的账号直接覆盖前一个，
-        //   表现为「小浣熊只能登一个号，登另一个会取代第一个」。
-        //   顺序：user_info 里的用户字段 → JWT 的用户声明 → 由 token 派生。
+        //   拿它做账号池主键会让后登录的账号覆盖前一个，表现为「只能登一个号」。
+        //
+        // 取值顺序（稳定性递减）：
+        //   1. user_info 的用户字段（上面已取，非空就不再覆盖）
+        //   2. JWT 用户声明 user_id/userId/uid/sub
+        //   3. 由 **refresh_token** 派生——绝不能用 access_token：
+        //      后者每次登录都轮换，派生的 uid 每次都变，等于每登一次多一个账号。
         if (userId.isEmpty()) {
             userId = jwtClaim(accessToken, "user_id", "userId", "uid", "sub")
         }
         if (userId.isEmpty()) {
-            // 最后兜底：由 token 派生一个稳定标识（同一 token 恒得同一值）
-            userId = "token-" + accessToken.hashCode().toUInt().toString(16)
+            // refresh_token 为空的老账号退回 access_token（有轮换风险，但比没有强）
+            val material = refreshToken.ifEmpty { accessToken }
+            userId = "token-" + material.hashCode().toUInt().toString(16)
         }
 
         val credential = Credential(

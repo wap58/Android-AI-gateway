@@ -15,6 +15,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -47,18 +48,33 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
 
         SectionCard(enterIndex = 0) {
             SectionLabel("批量操作")
+            val checkinTargets = remember(state) {
+                viewModel.batchTargetSummary(
+                    dev.aigw.core.provider.ACTION_CHECKIN,
+                    dev.aigw.core.provider.ProviderCapability.CHECKIN,
+                )
+            }
+            val taskTargets = remember(state) {
+                viewModel.batchTargetSummary(
+                    dev.aigw.core.provider.ACTION_TASKS,
+                    dev.aigw.core.provider.ProviderCapability.TASKS,
+                )
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 Button(
                     onClick = { viewModel.checkinAll() },
+                    // 一个可执行账号都没有就置灰：省得点了毫无反应，还以为是坏了
+                    enabled = checkinTargets.isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("批量签到")
                 }
                 OutlinedButton(
                     onClick = { viewModel.runAllTasks() },
+                    enabled = taskTargets.isNotEmpty(),
                     modifier = Modifier.weight(1f),
                 ) {
                     Text("批量任务")
@@ -71,8 +87,18 @@ fun TaskCenterScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> U
                 Text("刷新全部额度")
             }
             Text(
-                text = "签到作用于 Trae、WorkBuddy、小浣熊（国际版没有签到制度，自动跳过）；" +
-                    "任务作用于 Loomy 的新手任务；额度刷新作用于全部账号。",
+                text = buildString {
+                    append("签到作用于 Trae、WorkBuddy、小浣熊（国际版没有签到制度，自动跳过）；")
+                    append("任务作用于 Loomy 新手任务与 WorkBuddy 一键任务；额度刷新作用于全部账号。")
+                    if (checkinTargets.isNotEmpty()) {
+                        append("\n本次签到会动到：")
+                        append(checkinTargets.entries.joinToString("、") { "${it.key} ${it.value} 个" })
+                    }
+                    if (taskTargets.isNotEmpty()) {
+                        append("\n本次任务会动到：")
+                        append(taskTargets.entries.joinToString("、") { "${it.key} ${it.value} 个" })
+                    }
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

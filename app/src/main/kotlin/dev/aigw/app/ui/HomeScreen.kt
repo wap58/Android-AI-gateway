@@ -70,6 +70,7 @@ fun HomeScreen(
     openUsage: () -> Unit,
     openLogs: () -> Unit,
     openTaskCenter: () -> Unit,
+    openFreeModels: () -> Unit,
 ) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -110,6 +111,8 @@ fun HomeScreen(
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             },
         )
+
+        FreeModelBanner(state, onOpen = openFreeModels, modifier = Modifier.staggeredAppear(1))
 
         TelemetryGrid(state, openProviders, openModels, openCredits, openUsage, openLogs, Modifier.staggeredAppear(1))
 
@@ -756,3 +759,20 @@ private fun formatAxis(value: Long): String = when {
 private val DAY_LABEL_FORMAT = SimpleDateFormat("M/d", Locale.US)
 
 private fun dayLabel(millis: Long): String = DAY_LABEL_FORMAT.format(Date(millis))
+
+
+
+/**
+ * 今日免费横幅：网关卡下方的长条卡片，滚动展示倍率为 0 的模型；点击进入完整清单。
+ * 没有免费模型时整卡不渲染。
+ */
+@Composable
+private fun FreeModelBanner(
+    state: AppUiState,
+    onOpen: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val free = remember(state.models) { state.models.filter { isFreeToday(it) }.map { it.model.name }.distinct() }
+    if (free.isEmpty()) return
+    FreeModelTicker(items = free, modifier = modifier, onClick = onOpen)
+}

@@ -1648,6 +1648,26 @@ class AppViewModel(
      * Trae / WorkBuddy 的「任务」实际就是每日签到，已由 [checkinAll] 覆盖。
      * 全部成功时把各账号的上游原话拼进提示（如 Loomy 的领取结果），失败时走结果面板逐条展示。
      */
+    /**
+     * 批量动作会实际动到哪些账号（供应商 → 账号数）。
+     *
+     * 与批量执行用同一套筛选（能力 + supportsAction），避免「按钮能点但一个都不会跑」。
+     */
+    fun batchTargetSummary(
+        action: String,
+        capability: dev.aigw.core.provider.ProviderCapability,
+    ): Map<String, Int> = runCatching {
+        val out = LinkedHashMap<String, Int>()
+        for (p in _state.value.providers) {
+            if (capability !in p.capabilities) continue
+            val n = _state.value.accountsOf(p.id).count { acc ->
+                engine.supportsAction(p.id, acc.uid, action)
+            }
+            if (n > 0) out[p.displayName] = n
+        }
+        out
+    }.getOrDefault(emptyMap())
+
     fun runAllTasks() = runBatch(
         busyText = "批量任务",
         successNotice = { results ->

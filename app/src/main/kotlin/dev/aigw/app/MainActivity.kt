@@ -63,6 +63,7 @@ import dev.aigw.app.ui.CreditCenterScreen
 import dev.aigw.app.ui.HomeScreen
 import dev.aigw.app.ui.KeepAliveScreen
 import dev.aigw.app.ui.AccountTransferScreen
+import dev.aigw.app.ui.FreeModelsScreen
 import dev.aigw.app.ui.LoginBrowserDialog
 import dev.aigw.app.ui.LogsScreen
 import dev.aigw.app.ui.MeScreen
@@ -237,6 +238,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
 
                 SubPage.Usage -> UsageScreen(state, viewModel) { subPage = null }
                 SubPage.AccountTransfer -> AccountTransferScreen(state, viewModel) { subPage = null }
+                SubPage.FreeModels -> FreeModelsScreen(state, onBack = { subPage = null }, onOpenModel = { id -> subPage = SubPage.Models(id) })
                 SubPage.TaskCenter -> TaskCenterScreen(state, viewModel) { subPage = null }
                 SubPage.CreditCenter -> CreditCenterScreen(
                     state = state,
@@ -255,7 +257,14 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
-                SubPage.Models -> ModelsScreen(state, viewModel) { subPage = null }
+                is SubPage.Models -> ModelsScreen(
+                    state = state,
+                    viewModel = viewModel,
+                    onBack = { subPage = null },
+                    // ★ 必须用 when 的绑定值 page，不能用外层的 subPage 强转：
+                    //   AnimatedContent 退出动画期间 subPage 已置 null，强转会 NPE。
+                    highlightModel = page.highlight,
+                )
                 SubPage.Update -> UpdateScreen(state, viewModel) { subPage = null }
                 null -> MainTabs(
                     viewModel = viewModel,
@@ -337,17 +346,18 @@ private fun MainTabs(
                 state = state,
                 viewModel = viewModel,
                 openProviders = { onTab(Tab.Providers) },
-                openModels = { onSubPage(SubPage.Models) },
+                openModels = { onSubPage(SubPage.Models()) },
                 openCredits = { onSubPage(SubPage.CreditCenter) },
                 openUsage = { onSubPage(SubPage.Usage) },
                 openLogs = { onTab(Tab.Logs) },
                 openTaskCenter = { onSubPage(SubPage.TaskCenter) },
+                openFreeModels = { onSubPage(SubPage.FreeModels) },
             )
             Tab.Providers -> ProviderListScreen(
                 state = state,
                 onOpen = { onSubPage(SubPage.ProviderDetail(it)) },
                 onAddCustom = { onSubPage(SubPage.CustomProviderEdit(null)) },
-                onOpenModels = { onSubPage(SubPage.Models) },
+                onOpenModels = { onSubPage(SubPage.Models()) },
             )
             Tab.Logs -> LogsScreen(state, viewModel)
             Tab.Me -> MeScreen(state, viewModel, open = { onSubPage(it) })

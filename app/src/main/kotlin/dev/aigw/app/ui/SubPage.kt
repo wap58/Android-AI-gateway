@@ -16,6 +16,9 @@ sealed interface SubPage {
     /** 任务中心：批量签到与额度刷新。 */
     data object TaskCenter : SubPage
 
+    /** 今日免费模型清单：首页跑马灯点进来，看全部免费模型。 */
+    data object FreeModels : SubPage
+
     /** 额度中心：按供应商查看额度包明细。 */
     data object CreditCenter : SubPage
 
@@ -40,7 +43,7 @@ sealed interface SubPage {
     data object AppearanceTheme : SubPage
 
     /** 模型列表：从供应商页顶栏右侧进入（底栏已不设独立入口）。 */
-    data object Models : SubPage
+    data class Models(val highlight: String? = null) : SubPage
 
     /** 软件更新：版本、更新通道与下载（从「设置 → 关于软件」的版本号进入）。 */
     data object Update : SubPage
