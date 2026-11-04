@@ -43,7 +43,7 @@ android {
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
-        versionCode = 32
+        versionCode = 41
         versionName = "0.3.5"
     }
 
@@ -130,8 +130,6 @@ dependencies {
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     // Shizuku：无 Root 也能以 adb shell 身份调系统服务（改 Doze 白名单、standby bucket 等）
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

@@ -338,13 +338,6 @@ data class AppUiState(
     val checkedInToday: Boolean = false,
     /** 上次签到结果文案（成功/失败都会写，界面直接展示）。 */
     val checkinStatusText: String = "",
-    /**
-     * Root 守护的实测状态（null 表示还没查过）。
-     *
-     * 不能靠「点了安装按钮」就认为装好了 —— 必须回读进程与脚本落盘情况，
-     * 否则用户装完仍然一脸茫然（这正是之前的缺陷）。
-     */
-    val rootKeeper: dev.aigw.app.service.RootKeeper.Verify? = null,
     /** 模型开放名单：只对外暴露勾选的模型。 */
     val modelExposure: dev.aigw.core.gateway.ModelExposureSettings = dev.aigw.core.gateway.ModelExposureSettings(),
     /** 故障转移与并发配置。 */
@@ -937,13 +930,6 @@ class AppViewModel(
         viewModelScope.launch {
             withContext(Dispatchers.IO) {
                 dev.aigw.app.data.KeepAlivePrefs.setAutoStartEnabled(engine.store(), enabled)
-                // 立刻把新开关下发给守护脚本：否则要等下次启停网关才会写到 state 里，
-                // 期间守护仍按旧值决定要不要在开机时拉起。
-                val port = runCatching { engine.settings().port }.getOrDefault(0)
-                val running = engine.isRunning()
-                runCatching {
-                    dev.aigw.app.service.RootKeeper.syncState(running, port, enabled)
-                }
             }
             notice(if (enabled) "开机自启已开启（需系统自启动白名单放行）" else "开机自启已关闭")
             refresh()
@@ -974,64 +960,9 @@ class AppViewModel(
 
     // ------------------------------------------------------------------ Root 守护
 
-    /**
-     * 一键安装 Root 守护：装完立刻自检，确认它**真的在工作**而不只是「装上了」。
-     *
-     * 自检三项：守护进程活着、探活命令可用、开机目录铺对。
-     */
-    fun installRootKeeper() = action {
-        val r = dev.aigw.app.service.RootKeeper.install(app)
-        val v = runCatching { dev.aigw.app.service.RootKeeper.verify(app) }.getOrNull()
 
-        when (r) {
-            is dev.aigw.app.service.RootKeeper.Result.NoRoot -> r.detail
-            is dev.aigw.app.service.RootKeeper.Result.Failed -> r.detail
-            else -> {
-                val head = if (r is dev.aigw.app.service.RootKeeper.Result.Installed) {
-                    "守护已启动（PID ${r.pid}）"
-                } else {
-                    "守护已在运行"
-                }
-                if (v == null) {
-                    "$head；自检未执行"
-                } else {
-                    buildString {
-                        append(head)
-                        append("\n进程：").append(if (v.processAlive) "在跑（${v.pid}）" else "未启动 ✗")
-                        append("\n探活：").append(
-                            when {
-                                v.probeWorks -> "可用（返回「${v.probeOutput}」）"
-                                else -> "不可用 ✗（输出「${v.probeOutput.ifEmpty { "空" }}」）"
-                            }
-                        )
-                        append("\n开机目录：").append(
-                            if (v.registeredDirs.isEmpty()) "无（无框架环境，重启后需重开应用）"
-                            else v.registeredDirs.joinToString("、")
-                        )
-                        if (!v.ok) append("\n⚠ 有未通过项，守护不会真正生效")
-                    }
-                }
-            }
-        }
-    }
 
-    /** 单独跑一次自检（不安装），用于确认已在跑的守护是否健康。 */
-    fun verifyRootKeeper() = action {
-        val v = dev.aigw.app.service.RootKeeper.verify(app)
-        buildString {
-            append("Root 守护自检：").append(if (v.ok) "通过" else "未通过")
-            append("\n进程：").append(if (v.processAlive) "在跑（${v.pid}）" else "未启动 ✗")
-            append("\n探活：").append(
-                if (v.probeWorks) "可用（返回「${v.probeOutput}」）"
-                else "不可用 ✗（输出「${v.probeOutput.ifEmpty { "空" }}」）"
-            )
-            append("\n开机目录：").append(
-                if (v.registeredDirs.isEmpty()) "无（无框架环境，重启后需重开应用）"
-                else v.registeredDirs.joinToString("、")
-            )
-            if (v.logTail.isNotEmpty()) append("\n最近日志：").append(v.logTail.take(200))
-        }
-    }
+
 
     /** 自检是否正在进行（防止 3 秒轮询叠出多轮）。 */
     @Volatile
@@ -1045,119 +976,23 @@ class AppViewModel(
         }
     }
 
-    /**
-     * 刷新 Root 守护的实测状态（进页面时调一次，避免每帧起 su 进程）。
-     *
-     * [forceSuCheck]：强制重新探测 root 权限（结果有 30 秒缓存）。
-     * 用户去 Root 管理器授权完回到本页时传 true，否则要等半分钟卡片才出现。
-     */
-    fun refreshRootKeeperState(forceSuCheck: Boolean = false) {
-        // ★ 防堆积：页面每 3 秒调一次，而一次自检要起 su、跑探活，
-        //   网关没起来时能拖到十几秒。不加保护就会同时挂好几轮，
-        //   表现是界面越用越卡、su 进程越来越多。
-        if (rootKeeperChecking) return
-        rootKeeperChecking = true
-        viewModelScope.launch {
-            val v = try {
-                withContext(Dispatchers.IO) {
-                    runCatching { dev.aigw.app.service.RootKeeper.verify(app, forceSuCheck) }
-                        .getOrNull()
-                }
-            } finally {
-                rootKeeperChecking = false
-            }
-            // 查询失败（su 超时 / 被拒）时保留上一次的结果：
-            // 置 null 会让「Root 卡片」整块消失，用户会以为 root 权限丢了，
-            // 实际只是这一次查询没成功。
-            if (v != null) _state.value = _state.value.copy(rootKeeper = v)
-        }
-    }
 
-    /**
-     * 读完整守护日志。
-     *
-     * ★ 必须异步：读日志要起一个 su 进程，首次授权会弹框等待；
-     * 之前是同步返回、UI 在点击回调里直接调用 —— 点「查看更多」就是一次 ANR 风险。
-     */
-    fun loadFullRootKeeperLog(onLoaded: (String) -> Unit) {
-        viewModelScope.launch {
-            val text = withContext(Dispatchers.IO) {
-                runCatching { dev.aigw.app.service.RootKeeper.readFullLog(app) }.getOrDefault("")
-            }
-            onLoaded(text)
-        }
-    }
 
-    /** 清空守护日志。 */
-    fun clearRootKeeperLog() = action {
-        val ok = runCatching { dev.aigw.app.service.RootKeeper.clearLog() }.getOrDefault(false)
-        refreshRootKeeperState()
-        if (ok) "守护日志已清空" else "清除失败：没有 root 权限或日志不存在"
-    }
 
-    /** 卸载 Root 守护。 */
-    fun uninstallRootKeeper() = action {
-        when (val r = dev.aigw.app.service.RootKeeper.uninstall(app)) {
-            dev.aigw.app.service.RootKeeper.UninstallResult.Done -> {
-                // 清空界面上的旧快照：否则卡片会继续显示上次的「运行中 / 已生效」，
-                // 用户以为没卸干净（实际是界面数据没刷新）。
-                _state.value = _state.value.copy(rootKeeper = null)
-                refreshRootKeeperState(forceSuCheck = true)
-                "Root 守护已卸载（进程、开机脚本与 /data/adb/tyd 均已清除）"
-            }
-            is dev.aigw.app.service.RootKeeper.UninstallResult.NoRoot -> r.detail
-            is dev.aigw.app.service.RootKeeper.UninstallResult.Partial ->
-                "卸载未彻底：${r.detail}。请再点一次「卸载」，或检查 root 管理器是否拦截了删除。"
-        }
-    }
+
+
+
+
 
     // ------------------------------------------------------------------ Shizuku 增强
 
-    /**
-     * 一键把系统压制开关调到最有利（Doze 白名单 / standby 分级 / 休眠豁免等）。
-     * 装完立刻自检读数，证明系统真的接受了。
-     */
-    fun shizukuBoost() = action {
-        val report = dev.aigw.app.service.ShizukuBoost.boost(app)
-        val inspect = dev.aigw.app.service.ShizukuBoost.inspect(app)
-        buildString {
-            append("Shizuku 增强：${report.okCount}/${report.items.size} 项已执行")
-            report.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
-            append("\n\n自检（当前真实状态）：")
-            inspect.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
-            if (!inspect.allOk) append("\n⚠ 有未通过项，需手动在系统设置里处理")
-        }
-    }
 
-    /** 单独自检：不修改任何东西，只读当前状态。 */
-    fun shizukuInspect() = action {
-        val inspect = dev.aigw.app.service.ShizukuBoost.inspect(app)
-        buildString {
-            append("Shizuku 状态自检：").append(if (inspect.allOk) "全部通过" else "${inspect.okCount}/${inspect.items.size} 通过")
-            inspect.items.forEach { append(if (it.ok) "\n✓ " else "\n✗ ").append(it.name).append("：").append(it.detail) }
-        }
-    }
 
-    /** 请求 Shizuku 授权（弹系统确认框）。 */
-    fun shizukuRequestPermission() {
-        val blocked = dev.aigw.app.service.ShizukuBoost.requestPermission()
-        notice(
-            if (blocked) {
-                "已被拒绝且不再询问：请到 Sui / Shizuku 管理界面里给天元鼎手动开启授权"
-            } else {
-                "已发出授权请求，请在弹窗里点「允许」"
-            }
-        )
-    }
 
-    /** 撤销 Shizuku 增强。 */
-    fun shizukuRevert() = action {
-        val report = dev.aigw.app.service.ShizukuBoost.revert(app)
-        buildString {
-            append("已撤销 ${report.okCount}/${report.items.size} 项")
-            report.items.forEach { append("\n").append(it.name).append("：").append(if (it.ok) "已恢复" else it.detail) }
-        }
-    }
+
+
+
+
 
     /**
      * 授权返回后重新应用悬浮窗：仅在网关服务运行时补显示（开关开着且未在显示）。

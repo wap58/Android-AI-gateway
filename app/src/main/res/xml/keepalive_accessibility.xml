@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  保活用无障碍服务的配置：刻意声明「不读取窗口内容、不监听任何事件」。
+  这样系统设置页里显示为「无辅助功能」，用户一眼能看出它不碰隐私。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_desc"
+    android:notificationTimeout="100"
+    android:settingsActivity="" />

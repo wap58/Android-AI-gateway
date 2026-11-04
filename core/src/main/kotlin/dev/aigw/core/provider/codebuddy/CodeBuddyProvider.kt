@@ -297,7 +297,9 @@ class CodeBuddyProvider(
         redeemStreak(credential, base, headers, parts)
         drawLottery(credential, base, headers, parts)
         claimTravel(credential, base, headers, parts)
-        claimTasks(credential, base, headers, parts)
+        claimTasks(credential, base, headers, parts) {
+            adoptBuddy(credential, base, headers, parts)
+        }
         openBlindBox(credential, base, headers, parts)
         claimSchoolSeason(credential, base, headers, parts)
 
@@ -336,6 +338,11 @@ class CodeBuddyProvider(
                 nickname = credential.nickname.ifEmpty { "user" },
                 post = ::doPost,
                 reload = { fetchTasks(credential) ?: emptyList() },
+                chatOnce = { prompt ->
+                    runCatching {
+                        webChatWithId(credential, bill, desktopHeaders(credential, bill), prompt, "deepseek-v4-flash")
+                    }.getOrDefault("" to "")
+                },
             )
             val outcomes = runner.runAll(list)
             val done = outcomes.filter { it.ok && !it.detail.contains("跳过") }
@@ -380,12 +387,24 @@ class CodeBuddyProvider(
             val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
             val code = o.get("task_code")?.takeIf { it.isJsonPrimitive }?.asString
                 ?: o.get("code")?.takeIf { it.isJsonPrimitive }?.asString ?: return@mapNotNull null
+            // ★ 进度在 progress 对象里（{current,target}），不是顶层数字；
+            //   领取态也不是 claimed 布尔，而是 accept_status == "claimed"。
+            //   之前三个字段全读错 → 自动任务永远看到 0/0，判定「进度未变化」。
+            var cur = o.get("current")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+            var tgt = o.get("target")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+            o.objOrNull("progress")?.let { pr ->
+                val pc = pr.get("current")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+                val pt = pr.get("target")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+                if (pt > 0 || pc > 0) { cur = pc; tgt = pt }
+            }
+            val acc = o.get("accept_status")?.takeIf { it.isJsonPrimitive }?.asString ?: ""
             dev.aigw.core.provider.ProviderTask(
                 code = code,
                 title = o.get("title")?.takeIf { it.isJsonPrimitive }?.asString ?: code,
-                current = o.get("progress")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
-                target = o.get("target")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
-                claimed = o.get("claimed")?.takeIf { it.isJsonPrimitive }?.asBoolean ?: false,
+                current = cur,
+                target = tgt,
+                status = acc,
+                claimed = acc == "claimed",
             )
         }
     }.getOrNull()
@@ -422,7 +441,8 @@ class CodeBuddyProvider(
         base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
-    ) {
+    ): Boolean {
+        var ok = false
         val root = chatBase(credential)
         runCatching {
             val (infoStatus, infoBody) = getJson("$root$PATH_GROWTH/buddy/info", headers)
@@ -431,7 +451,7 @@ class CodeBuddyProvider(
                 val buddy = obj.objOrNull("buddy") ?: obj.objOrNull("data")?.objOrNull("buddy")
                 buddy != null && buddy.entrySet().isNotEmpty()
             } ?: false
-            if (adopted) return@runCatching
+            if (adopted) { ok = true; return@runCatching }
 
             val agree = "${chatBase(credential)}/activity/growth/buddy/agreement"
             runCatching { postJson(agree, credential, """{"agree":true}""", headers) }
@@ -440,8 +460,10 @@ class CodeBuddyProvider(
             if (status in 200..299) {
                 val credit = jsonOf(body)?.firstNumber("credit", "reward_credit")
                 parts.add(if (credit != null) "领养 Buddy +$credit" else "领养 Buddy")
+                ok = true
             }
         }
+        return ok
     }
 
     /**
@@ -594,46 +616,194 @@ class CodeBuddyProvider(
             }
         }
     }
-
     /**
      * 任务：未领取的先接单（进度从接单那刻才开始计），已接单且达标的领奖。
+     *
+     * 三个关键点（照上游 WorkBuddy-Daily 的实现）：
+     * 1. **批量 accept**：单条逐次调用慢且容易被限流；
+     * 2. **前置补救**：accept 回执若是 `prerequisite not met: <code>`
+     *    （典型是 first_buddy——账号还没有 Buddy 实例时，服务端拒绝其余任务登记），
+     *    先补跑前置任务，再整批重试一次；
+     * 3. **回读验证**：上游存在「200 + status=accepted 但没落账」的形态，
+     *    所以接受完要重新读一遍任务列表，仍未登记的逐个重试。
      */
     private fun claimTasks(
         credential: Credential,
         base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
+        ensureFirstBuddy: (() -> Boolean)? = null,
     ) {
         runCatching {
-            val (status, body) = getJson("$base/tasks", headers)
-            if (status !in 200..299) return@runCatching
-            val tasks = jsonOf(body)?.arrayOrNull("tasks") ?: return@runCatching
+            val tasks = readTasks(base, headers) ?: return@runCatching
+
+            // ---- 1. 收集待登记的任务 ----
+            val todo = ArrayList<String>()
             for (element in tasks) {
                 val task = runCatching { element.asJsonObject }.getOrNull() ?: continue
                 if (task.get("locked")?.asBoolean == true) continue
                 val acceptStatus = task.firstString("accept_status")
                 if (acceptStatus == "claimed") continue
-
                 val progress = task.objOrNull("progress")
                 val target = progress?.firstLong("target")?.takeIf { it > 0 } ?: 1L
                 val current = progress?.firstLong("current") ?: 0L
-                val done = current >= target
-                // 已接单但还没做完：等用户完成，别重复提交
-                if (!done && acceptStatus.isNotEmpty()) continue
-                val claiming = done && acceptStatus.isNotEmpty()
+                // 已接单但没做完：等用户完成，别重复提交
+                if (current < target && acceptStatus.isNotEmpty()) continue
+                val code = task.firstString("task_code")
+                if (code.isNotEmpty() && acceptStatus != "accepted") todo.add(code)
+            }
+            if (todo.isEmpty()) return@runCatching
 
+            // ---- 2. 批量 accept ----
+            val payload = JsonObject().apply {
+                add("task_codes", com.google.gson.JsonArray().apply { todo.forEach { add(it) } })
+            }.toString()
+            val (code, text) = postJson("$base/tasks/accept", credential, payload, headers)
+            if (code !in 200..299) return@runCatching
+
+            // ---- 3. 解析逐项结果，收集前置缺失 ----
+            val preconditionMiss = HashMap<String, MutableList<String>>()
+            val results = jsonOf(text)?.objOrNull("data")?.arrayOrNull("results")
+            results?.forEach { el ->
+                val row = runCatching { el.asJsonObject }.getOrNull() ?: return@forEach
+                val st = row.firstString("status")
+                if (st == "accepted") return@forEach
+                val msg = row.firstString("message")
+                val idx = msg.indexOf("prerequisite not met:")
+                if (idx >= 0) {
+                    val pre = msg.substring(idx + "prerequisite not met:".length)
+                        .trim().substringBefore(' ').trim('(', ')', '[', ']')
+                    if (pre.isNotEmpty()) {
+                        preconditionMiss.getOrPut(pre) { ArrayList() }
+                            .add(row.firstString("task_code"))
+                    }
+                }
+            }
+
+            // ---- 4. 前置补救：只认得 first_buddy，其它前置暂无法自动完成 ----
+            for ((pre, blocked) in preconditionMiss) {
+                if (pre == "first_buddy" && ensureFirstBuddy != null && ensureFirstBuddy()) {
+                    parts.add("补领 Buddy 后重试 ${blocked.size} 项")
+                    // 整批重试一次
+                    postJson("$base/tasks/accept", credential, payload, headers)
+                } else {
+                    parts.add("${blocked.size} 项待前置「$pre」未满足")
+                }
+            }
+
+            // ---- 5. 回读验证 + 逐个重试未落账的 ----
+            val after = readTasks(base, headers) ?: return@runCatching
+            val pending = ArrayList<String>()
+            for (element in after) {
+                val task = runCatching { element.asJsonObject }.getOrNull() ?: continue
                 val taskCode = task.firstString("task_code")
-                if (taskCode.isEmpty()) continue
-                val payload = JsonObject().apply { addProperty("task_code", taskCode) }.toString()
-                val (code, text) = postJson("$base/tasks/accept", credential, payload, headers)
-                if (code !in 200..299) continue
-                val title = task.firstString("title").ifEmpty { taskCode }
-                val credit = jsonOf(text)?.firstLong("credit") ?: 0L
-                parts.add(
-                    if (claiming && credit > 0) "领任务奖「$title」+$credit" else "领取任务「$title」",
-                )
+                if (taskCode !in todo) continue
+                val st = task.firstString("accept_status")
+                if (st != "accepted" && st != "claimed") pending.add(taskCode)
+            }
+            for (taskCode in pending) {
+                val one = JsonObject().apply { addProperty("task_code", taskCode) }.toString()
+                runCatching { postJson("$base/tasks/accept", credential, one, headers) }
+            }
+
+            // ---- 6. 汇总 ----
+            val accepted = todo.size - pending.size
+            if (accepted > 0) parts.add("登记 $accepted 项任务")
+            if (pending.isNotEmpty()) parts.add("${pending.size} 项未落账")
+        }
+    }
+
+    /**
+     * 真实网页对话：建会话 → 流式对话 → 释放会话。
+     *
+     * 为什么必须真跑一遍：上游会校验 `conversationId` 是否存在、服务端消息 id 是否为
+     * 真实形态。只发事件上报不带真实会话，任务进度不会增长（实测）。
+     *
+     * @return 回复正文；失败返回空串（调用方按未完成处理）。
+     */
+    /** 真跑一次网页对话，返回 (conversationId, 回复正文)。 */
+    private fun webChatWithId(
+        credential: Credential,
+        base: String,
+        headers: Map<String, String>,
+        prompt: String,
+        model: String,
+    ): Pair<String, String> {
+        val convId = createWebConversation(base, headers) ?: return "" to ""
+        return try {
+            val payload = JsonObject().apply {
+                add("messages", com.google.gson.JsonArray().apply {
+                    add(JsonObject().apply {
+                        addProperty("role", "user")
+                        addProperty("content", prompt)
+                    })
+                })
+                addProperty("model", model)
+                addProperty("stream", true)
+                addProperty("conversationId", convId)
+            }.toString()
+
+            val conn = java.net.URL("$base/console/chat/completions").openConnection() as HttpURLConnection
+            var text = ""
+            try {
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.connectTimeout = 15_000
+                conn.readTimeout = 90_000
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("Accept", "text/event-stream")
+                headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
+                conn.outputStream.use { it.write(payload.toByteArray()) }
+
+                if (conn.responseCode !in 200..299) return convId to text
+                conn.inputStream.bufferedReader().use { reader ->
+                    var line = reader.readLine()
+                    while (line != null) {
+                        if (line.startsWith("data: ")) {
+                            val d = line.removePrefix("data: ").trim()
+                            if (d == "[DONE]") break
+                            runCatching {
+                                val json = JsonParser.parseString(d).asJsonObject
+                                json.getAsJsonArray("choices")?.forEach { c ->
+                                    c.asJsonObject.objOrNull("delta")
+                                        ?.firstString("content")
+                                        ?.let { if (it.isNotEmpty()) text += it }
+                                }
+                            }
+                        }
+                        if (text.length > 2000) break
+                        line = reader.readLine()
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                runCatching { conn.disconnect() }
+            }
+            convId to text
+        } finally {
+            // 网页会话占上游活跃名额，无论成败都要释放
+            runCatching {
+                postJson("$base/console/webchat/conversations/$convId/stop", credential, "{}", headers)
             }
         }
+    }
+
+    /** 建网页会话并返回 conversationId；失败返回 null。 */
+    private fun createWebConversation(base: String, headers: Map<String, String>): String? {
+        val body = JsonObject().apply {
+            addProperty("name", "wb-" + java.util.UUID.randomUUID().toString().take(8))
+        }.toString()
+        val (code, text) = postJson("$base/console/webchat/conversations", null, body, headers)
+        if (code !in 200..299) return null
+        return jsonOf(text)?.objOrNull("data")?.firstString("conversationId")
+            ?.takeIf { it.isNotEmpty() }
+    }
+
+    /** 读成长任务列表；失败返回 null（不抛异常，调用方按「没有任务」处理）。 */
+    private fun readTasks(base: String, headers: Map<String, String>): com.google.gson.JsonArray? {
+        val (status, body) = getJson("$base/tasks", headers)
+        if (status !in 200..299) return null
+        return jsonOf(body)?.arrayOrNull("tasks")
     }
 
     /** 盲盒：有配额才开。 */
