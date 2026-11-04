@@ -61,22 +61,17 @@ jobs:
       - name: 生成 CI 版本号
         id: version
         run: |
-          # 基础版本从 build.gradle 读（如 0.3.5），后面拼上构建号。
-          # 为什么要拼：应用内更新的 isNewer() 只比 versionName，
-          # 同一基础版本连续出 CI 包时永远相等 → 检测不到更新。
-          # 只取前三段（0.3.5），防止上一次写回的 .1075 累积成 0.3.5.1075.1076
+          # versionName 加 _ci_{versionCode} 后缀：与公开版 0.3.5 一眼区分，
+          # 且能通过 isNewer() 的数字逐段比较检测到更新。
+          # versionCode 用仓库里的值（不在这里自增）——保证 CI 与本地调试包
+          # 走同一条递增序列，交替安装不会出现「降级」。
           RAW=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
-          BASE=$(echo "$RAW" | cut -d. -f1-3)
-          # versionCode 用「1000 + 构建号」：确保永远大于本地调试包，
-          # 且单调递增，覆盖安装不会因降级被拒。
-          VCODE=$(( 1000 + ${{ github.run_number }} ))
-          VERSION="${BASE}.${VCODE}"
+          BASE=$(echo "$RAW" | cut -d. -f1-3 | cut -d_ -f1)
+          VCODE=$(grep -E '^\s*versionCode\s*=\s*[0-9]+' app/build.gradle.kts | head -n1 | grep -oE '[0-9]+')
+          VERSION="${BASE}_ci_${VCODE}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "vcode=$VCODE" >> "$GITHUB_OUTPUT"
           echo "本次 CI 版本：$VERSION (versionCode=$VCODE)"
-          # 写回 build.gradle：versionName 带构建号，versionCode 用同一数字保证可覆盖安装
           sed -i -E "s/^\s*versionName\s*=.*/        versionName = \"${VERSION}\"/" app/build.gradle.kts
-          sed -i -E "s/^\s*versionCode\s*=\s*[0-9]+/        versionCode = ${VCODE}/" app/build.gradle.kts
           grep -E '^\s*(versionCode|versionName)\s*=' app/build.gradle.kts
 
       - name: 打包 release
