@@ -58,21 +58,16 @@ jobs:
       - name: 静态自检（括号平衡 / 空对象体 / 跨文件成员引用）
         run: python3 selfcheck.py
 
-      - name: 生成 CI 版本号
+      - name: 读取版本号
         id: version
         run: |
-          # versionName 加 _ci_{versionCode} 后缀：与公开版 0.3.5 一眼区分，
-          # 且能通过 isNewer() 的数字逐段比较检测到更新。
-          # versionCode 用仓库里的值（不在这里自增）——保证 CI 与本地调试包
-          # 走同一条递增序列，交替安装不会出现「降级」。
-          RAW=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
-          BASE=$(echo "$RAW" | cut -d. -f1-3 | cut -d_ -f1)
-          VCODE=$(grep -E '^\s*versionCode\s*=\s*[0-9]+' app/build.gradle.kts | head -n1 | grep -oE '[0-9]+')
-          VERSION="${BASE}_ci_${VCODE}"
+          # 直接用 build.gradle 里的 versionName（纯数字，如 0.3.6）。
+          # 不要加 _ci_ 之类的后缀：应用内更新用 isNewer() 按 . 切分后
+          # toIntOrNull() 比较，带后缀的段会解析失败被丢弃，导致永远检测不到更新。
+          # 测试版与公开版的区分交给 Release 的 prerelease 标记和 App 的通道选择。
+          VERSION=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "本次 CI 版本：$VERSION (versionCode=$VCODE)"
-          sed -i -E "s/^\s*versionName\s*=.*/        versionName = \"${VERSION}\"/" app/build.gradle.kts
-          grep -E '^\s*(versionCode|versionName)\s*=' app/build.gradle.kts
+          echo "本次 CI 版本：$VERSION"
 
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain
