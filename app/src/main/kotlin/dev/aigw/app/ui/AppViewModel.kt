@@ -2042,8 +2042,12 @@ class AppViewModel(
 
     /** 逐段比较版本号，远端更大返回 true。 */
     private fun isNewer(remote: String, local: String): Boolean {
-        val r = remote.split('.', '-').mapNotNull { it.toIntOrNull() }
-        val l = local.split('.', '-').mapNotNull { it.toIntOrNull() }
+        // 提取所有数字段比较，不能只按 . 和 - 切：
+        // CI 包的 versionName 形如 `0.3.5_ci_42`，按 . 切成 "5_ci_42" 后
+        // toIntOrNull() 返回 null 被丢弃，结果与 0.3.5 判为相等 → 永远检测不到更新。
+        fun nums(v: String) = Regex("""\d+""").findAll(v).map { it.value.toInt() }.toList()
+        val r = nums(remote)
+        val l = nums(local)
         for (i in 0 until maxOf(r.size, l.size)) {
             val a = r.getOrElse(i) { 0 }
             val b = l.getOrElse(i) { 0 }
