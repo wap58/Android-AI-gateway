@@ -63,11 +63,11 @@ object RaccoonUi : ProviderUi {
                     onClick = { actions.onWebLogin(id, "") },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text("在浏览器中打开小浣熊登录页")
+                    Text("在浏览器中打开登录页")
                 }
                 // 部分手机浏览器禁止访问本机回环地址（实测 Alook 连 127.0.0.1:8888 都打不开），
                 // 授权成功后跳 127.0.0.1 的回调会停在空白页。内置 WebView 由 App 自己截回调。
-                OutlineActionButton(text = "在应用内登录（浏览器打不开时用这个）") {
+                OutlineActionButton(text = "在应用内登录（不用跳出 App）") {
                     actions.onInAppLogin(id, "")
                 }
                 OutlineActionButton(

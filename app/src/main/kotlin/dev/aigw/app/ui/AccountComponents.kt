@@ -211,7 +211,7 @@ fun RegionSelector(
     isGlobal: Boolean,
     onSelectGlobal: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    labels: List<String> = listOf("国内", "国外"),
+    labels: List<String> = listOf("国内", "国际"),
 ) {
     Surface(
         shape = CircleShape,

@@ -340,6 +340,73 @@ class CustomUi(override val id: String) : ProviderUi {
                 actions.onRenameAccount(id, account.uid, nickname)
             }
 
+            // API Key 编辑：以前只能在添加时填，填错了没法改，只能删号重建。
+            var editingKey by rememberSaveable(account.uid) { mutableStateOf(false) }
+            var newKey by remember(account.uid) { mutableStateOf("") }
+            if (!editingKey) {
+                OutlineActionButton("修改 API Key") {
+                    newKey = actions.accountApiKeyOf(id, account.uid)
+                    editingKey = true
+                }
+            } else {
+                OutlinedTextField(
+                    value = newKey,
+                    onValueChange = { newKey = it },
+                    label = { Text("API Key") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlineActionButton("保存 Key", Modifier.weight(1f)) {
+                        actions.onUpdateCustomAccountKey(id, account.uid, newKey.trim())
+                        editingKey = false
+                    }
+                    OutlineActionButton("取消", Modifier.weight(1f)) { editingKey = false }
+                }
+            }
+
+            // 模型列表是供应商级共享的（所有账号用同一份），入口放在账号卡里方便就地改。
+            var editingModels by rememberSaveable(account.uid) { mutableStateOf(false) }
+            if (!editingModels) {
+                OutlineActionButton("编辑模型列表（共 ${actions.customModelsOf(id).size} 个）") {
+                    editingModels = true
+                }
+            } else {
+                var draft by remember(account.uid) {
+                    mutableStateOf(actions.customModelsOf(id).joinToString("\n"))
+                }
+                var fetched by remember { mutableStateOf<List<String>?>(null) }
+                ModelsSection(
+                    accounts = listOf(account),
+                    actions = actions,
+                    apiKey = actions.accountApiKeyOf(id, account.uid),
+                    models = draft,
+                    onFetched = { fetched = it },
+                    onModelsChange = { draft = it },
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlineActionButton("保存模型", Modifier.weight(1f)) {
+                        actions.onSaveCustomModels(
+                            id,
+                            draft.lines().map { it.trim() }.filter { it.isNotEmpty() },
+                        )
+                        editingModels = false
+                    }
+                    OutlineActionButton("取消", Modifier.weight(1f)) { editingModels = false }
+                }
+                fetched?.let { list ->
+                    ModelPickerSheet(
+                        fetched = list,
+                        currentModels = draft,
+                        onDismiss = { fetched = null },
+                        onConfirm = { selected ->
+                            draft = selected.sorted().joinToString("\n")
+                            fetched = null
+                        },
+                    )
+                }
+            }
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,

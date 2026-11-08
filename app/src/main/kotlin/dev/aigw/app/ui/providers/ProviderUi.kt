@@ -106,6 +106,15 @@ class ProviderUiActions(
         { _, _, _, _ -> },
     /** 改账号显示名称（自定义供应商用）。 */
     val onRenameAccount: (providerId: String, uid: String, nickname: String) -> Unit = { _, _, _ -> },
+    /**
+     * 改自定义账号的 API Key。
+     *
+     * 以前 key 只能在「添加账号」时填一次，填错就得删号重建；账号卡里补了这一项。
+     * 换 key 会重算 uid（uid 由 key 派生），等于换了另一个账号，因此实现里要挪账号而不是原地改。
+     */
+    val onUpdateCustomAccountKey: (providerId: String, uid: String, apiKey: String) -> Unit = { _, _, _ -> },
+    /** 保存自定义供应商的模型列表（与账号共用一份）。 */
+    val onSaveCustomModels: (providerId: String, models: List<String>) -> Unit = { _, _ -> },
     /** 读账号的 API Key（仅自定义供应商）。 */
     val accountApiKeyOf: (providerId: String, uid: String) -> String = { _, _ -> "" },
     /** 读自定义供应商已保存的模型列表。 */

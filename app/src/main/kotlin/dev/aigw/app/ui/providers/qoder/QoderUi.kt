@@ -5,6 +5,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.Icon as MaterialIcon
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material3.Button
@@ -21,7 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.aigw.app.ui.ChoiceChip
+import dev.aigw.app.ui.RegionSelector
 import dev.aigw.app.ui.OutlineActionButton
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
@@ -79,40 +82,44 @@ object QoderUi : ProviderUi {
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             SectionCard(enterIndex = 0) {
-                SectionLabel("区域")
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ChoiceChip(
-                        text = "国内 qoder.com.cn",
-                        selected = !global,
-                        onClick = {
-                            global = false
-                            actions.onUpdateProviderOption(id, "region", "cn")
-                        },
-                    )
-                    ChoiceChip(
-                        text = "国际 qoder.sh",
-                        selected = global,
-                        onClick = {
-                            global = true
-                            actions.onUpdateProviderOption(id, "region", "intl")
+                // 与 Trae / WorkBuddy 一致的排版：左上「🌐 服务区域」，右侧切换器，同一行。
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        MaterialIcon(
+                            Icons.Filled.Language,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        SectionLabel("服务区域")
+                    }
+                    RegionSelector(
+                        isGlobal = global,
+                        onSelectGlobal = { isGlobal ->
+                            global = isGlobal
+                            actions.onUpdateProviderOption(id, "region", if (isGlobal) "intl" else "cn")
                         },
                     )
                 }
-                SectionLabel(if (global) "登录 · 国际版 qoder.sh" else "登录 · 国内版 qoder.com.cn")
-                // 设备授权是自定义 scheme 回调（qoder-work-cn:// / qoder://），
-                // 只能由 App 内 WebView 接住，系统浏览器接不了。
+                SectionLabel(if (global) "登录 · 国际版" else "登录 · 国内版")
+                // 两个入口都可以：设备授权页是普通网页，浏览器里也能走完；
+                // 区别只是回调方式——应用内 WebView 能直接接住自定义 scheme
+                // （qoder-work-cn:// / qoder://），浏览器接不住，需要回来粘贴导入。
                 Button(
-                    onClick = { actions.onInAppLogin(id, region) },
+                    onClick = { actions.onWebLogin(id, region) },
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (global) "打开国际版授权页" else "打开国内版授权页")
+                    Text(if (global) "在浏览器中打开国际版登录页" else "在浏览器中打开国内版登录页")
                 }
-                // 系统浏览器入口：部分设备上内置 WebView 渲染异常（登录页空白），
-                // 或者用户更习惯用自己的浏览器，留一条旁路。
-                // 设备授权的回调是自定义 scheme，浏览器接不住，所以拿到授权码后
-                // 仍需回到 App 完成换取；这条路径适合「浏览器里能走完授权页」的场景。
-                OutlineActionButton(text = "用浏览器打开授权页") {
-                    actions.onWebLogin(id, region)
+                OutlineActionButton(text = "在应用内登录（不用跳出 App）") {
+                    actions.onInAppLogin(id, region)
                 }
                 OutlineActionButton(
                     text = if (expanded) "收起粘贴导入" else "粘贴凭证 JSON 导入",

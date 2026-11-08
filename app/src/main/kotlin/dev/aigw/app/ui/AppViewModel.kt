@@ -1421,6 +1421,29 @@ class AppViewModel(
         engine.reloadCustomProviders()
     }
 
+    /** 修改自定义账号的 API Key。uid 由 key 派生，换了 key 就是另一个账号，所以整条挪过去。 */
+    fun updateCustomAccountKey(providerId: String, uid: String, apiKey: String) = action {
+        val key = apiKey.trim()
+        if (key.isEmpty()) throw IllegalStateException("API Key 不能为空")
+        val old = engine.account(providerId, uid) ?: throw IllegalStateException("账号不存在")
+        val newUid = CustomProvider.uidOf(key)
+        if (newUid == uid) {
+            "API Key 没有变化"
+        } else {
+            if (engine.account(providerId, newUid) != null) throw IllegalStateException("这个 API Key 已经有账号了")
+            // 先加新的再删旧的：addAccount 万一失败，旧账号还在，不至于把用户号搞丢。
+            engine.addAccount(providerId, newUid, old.nickname.orEmpty(), CustomProvider.secretOf(key))
+            engine.removeAccount(providerId, uid)
+            "API Key 已更新"
+        }
+    }
+
+    /** 保存自定义供应商的模型列表（账号卡里的「编辑模型列表」用它）。 */
+    fun saveCustomModelsFromUi(providerId: String, models: List<String>) = action {
+        saveCustomModels(providerId, models)
+        "模型列表已保存（${models.size} 个）"
+    }
+
     /** 修改账号显示名称。 */
     fun renameAccount(providerId: String, uid: String, nickname: String) = action {
         val account = engine.account(providerId, uid) ?: throw IllegalStateException("账号不存在")

@@ -1644,10 +1644,12 @@ class GatewayEngine(
                 firstError = firstError ?: failures[region] ?: "拉取超时"
                 continue
             }
-            val label = when (region) {
-                "cn" -> "国内"
-                "global" -> "国外"
-                else -> region
+            // 区域后缀统一成「国内 / 国外」：各家 regions() 的值不统一
+            // （qoder 是 cn/intl，trae/agnes/codebuddy 是 cn/global），
+            // 直接拼原值会出现 "Qoder（intl）" 这种和别家不一致的文案。
+            val label = when (region.lowercase()) {
+                "cn", "china" -> "国内"
+                else -> "国际"
             }
             if (view.fromFallback) anyFallback = true
             for (model in view.models) {

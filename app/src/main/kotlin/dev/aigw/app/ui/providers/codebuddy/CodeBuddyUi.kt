@@ -113,7 +113,7 @@ object CodeBuddyUi : ProviderUi {
                 onClick = { actions.onDeviceLogin(id, region) },
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(if (global) "打开国际版登录页" else "打开国内版登录页")
+                Text(if (global) "在浏览器中打开国际版登录页" else "在浏览器中打开国内版登录页")
             }
             // 不用跳出 App：WebView 里完成授权，关闭后由后台轮询取结果。
             OutlineActionButton(text = "在应用内登录（不用跳出 App）") {

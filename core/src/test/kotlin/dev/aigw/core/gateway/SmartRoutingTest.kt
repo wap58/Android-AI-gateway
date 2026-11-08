@@ -104,10 +104,10 @@ class SmartRoutingTest {
         assertTrue(prefixes.contains("codebuddy-cn"), "应包含国内组前缀：$prefixes")
         assertTrue(prefixes.contains("codebuddy-global"), "应包含国外组前缀：$prefixes")
 
-        // 组标题明确区分国内和国外
+        // 组标题明确区分国内和国际
         val titles = models.map { it.providerName }.distinct()
         assertTrue(titles.any { it.contains("国内") }, "应包含国内标题：$titles")
-        assertTrue(titles.any { it.contains("国外") }, "应包含国外标题：$titles")
+        assertTrue(titles.any { it.contains("国际") }, "应包含国际标题：$titles")
     }
 
     @Test
