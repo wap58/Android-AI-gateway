@@ -319,17 +319,39 @@ class RaccoonProvider(
     // ------------------------------------------------------------------ 网页登录
 
     override fun beginWebLogin(callbackUrl: String, region: String): WebLoginTicket {
-        // 不要带 login_source=desktop：授权页会走 `office-raccoon://auth/callback` 自定义 scheme 分支
-        // （手机上没有 App 能接），反而不回 redirect。不传时授权页才把 `?authorization_code=…` 回推到 callbackUrl。
+        // ★ 必须走 `desktop_callback=loopback` 通道，否则手机浏览器上登录成功后是空白页。
+        //
+        // 授权页（/authorize）的投递逻辑有三种分支：
+        //   1. redirect 命中 home.51cto.com 白名单 → 直接 window.location.assign（不需要）
+        //   2. login_source=desktop → T() 里 r.navigate() 直接导航  ← 任何浏览器都能用
+        //   3. 其余 → popup.location.href = 回调地址
+        //      而 popup 来自 window.open("about:blank")，手机浏览器基本都拦截，
+        //      得到 null 后投递静默失败：登录成功但停在空白页，账号进不来。
+        //
+        // 实测（2026-11-06）：系统自带浏览器、Alook 走分支 3 → 空白页；
+        // Edge、360 极速允许 popup → 能添加账号。差异只在这里。
+        //
+        // 走 loopback 分支要同时满足授权页 v() 的硬校验：
+        //   - redirect 必须精确匹配 `http://127.0.0.1:<1024-65535>/auth/callback`
+        //   - state 必须是 64 位小写十六进制（不是随便的串）
+        //   - 不能带 ide；login_source 必须是 desktop
+        // 且桌面模式下回调参数名是 `code` 而不是 `authorization_code`（见 completeWebLogin）。
+        val state = randomHex(32) // 32 字节 = 64 位十六进制
         val loginUrl = "$host$PATH_LOGIN" +
             "?appname=" + enc(APP_NAME) +
-            "&redirect=" + enc(callbackUrl)
-        return WebLoginTicket(randomHex(16), loginUrl, callbackUrl)
+            "&redirect=" + enc(callbackUrl) +
+            "&state=" + enc(state) +
+            "&login_source=desktop" +
+            "&desktop_callback=loopback"
+        return WebLoginTicket(state, loginUrl, callbackUrl)
     }
 
     override fun completeWebLogin(callbackUrl: String): ProviderAccount {
-        val code = queryParam(callbackUrl, "authorization_code").orEmpty()
-        if (code.isEmpty()) throw IllegalStateException("回调链接缺少 authorization_code")
+        // loopback（desktop）通道回推的参数名是 `code`；普通通道是 `authorization_code`。
+        // 两个都认，避免回调来源变化后静默失败。
+        val code = queryParam(callbackUrl, "code").orEmpty()
+            .ifEmpty { queryParam(callbackUrl, "authorization_code").orEmpty() }
+        if (code.isEmpty()) throw IllegalStateException("回调链接缺少授权码（code）")
         val (status, text) = postJson(
             "$host$PATH_LOGIN_WITH_CODE",
             JsonObject().apply { addProperty("authorization_code", code) }.toString(),

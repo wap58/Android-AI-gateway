@@ -15,6 +15,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import dev.aigw.app.data.GatewayIntent
 import dev.aigw.app.data.KeepAlive
+import dev.aigw.app.data.KeepAlivePrefs
 import dev.aigw.app.data.KeepAliveStatus
 import dev.aigw.app.data.ModelSnapshotStore
 import dev.aigw.app.gatewayEngine
@@ -436,10 +437,32 @@ class AppViewModel(
     private var modelsGeneration = 0
 
     /** 上次发起模型目录刷新的时刻；为 0 表示本次进程内还没拉过。 */
+    /**
+     * 应用打开时恢复上次的运行状态。
+     *
+     * 只在「用户意图为运行中」且「引擎确实没跑」时动作一次——不会和用户的手动操作打架。
+     * 主要覆盖 force-stop 场景：那是 Android 唯一让应用彻底无法自救的状态
+     * （粘性服务与所有 alarm/job 一并被清），只能等下次打开时补回来。
+     */
+    private fun maybeAutoResume() {
+        runCatching {
+            if (engine.isRunning()) return
+            val desired = KeepAlivePrefs.desiredRunning(engine.store()) ||
+                GatewayIntent.isMarkedRunning(app)
+            if (!desired) return
+            startGateway()
+            _state.value = _state.value.copy(notice = "已自动恢复上次的运行状态")
+        }
+    }
+
     @Volatile
     private var modelsFetchedAt = 0L
 
     init {
+        // 被系统强停过（force-stop 会清掉粘性服务与所有定时唤醒，应用无法自救）时，
+        // 打开应用就地恢复，不再要求用户多点一次「启动网关服务」。
+        maybeAutoResume()
+
         // 登录在浏览器里完成、由网关的回调监听落池，这里接住通知刷新界面。
         // 只有账号集合真的变了才重拉模型：刷新凭证（refreshAccount 回存）也会触发本回调，
         // 那类更新不影响模型列表，重复拉取只是白白多打一轮上游。
@@ -1110,6 +1133,12 @@ class AppViewModel(
         beginBrowserLogin(providerId, region)
     }
 
+    /** 用户在内置 WebView 里完成设备授权后关闭窗口，用**同一个** state 起轮询。 */
+    fun startDevicePollAfterInApp(providerId: String, region: String, state: String) {
+        if (state.isEmpty()) return
+        pollDeviceLogin(providerId, state, region)
+    }
+
     fun providerOption(providerId: String, key: String, fallback: String = ""): String =
         providerSettings(providerId).option(key, fallback)
 
@@ -1155,8 +1184,57 @@ class AppViewModel(
         }
     }
 
-    /** 用户在浏览器选择框里选定之后真正打开登录页。 */
-    fun launchLoginIn(browserPackage: String) {
+    /**
+     * 内置 WebView 登录：拿到要加载的 URL 与拦截前缀后交给界面拉起 WebView。
+     *
+     * 与 [beginBrowserLogin] 并列：那条路交给系统浏览器并监听本地端口，
+     * 遇到禁止访问 127.0.0.1 的浏览器（Alook）就只能停在空白页。
+     */
+    fun inAppLoginTarget(
+        providerId: String,
+        region: String = "",
+        onReady: (dev.aigw.core.gateway.InAppLoginTarget) -> Unit,
+    ) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = "正在准备登录")
+            val result = withContext(Dispatchers.IO) {
+                runCatching { engine.inAppLoginTarget(providerId, region) }
+            }
+            _state.value = _state.value.copy(busy = "")
+            result.fold(
+                onSuccess = onReady,
+                onFailure = { _state.value = _state.value.copy(notice = it.message ?: "无法开始登录") },
+            )
+        }
+    }
+
+    /** 应用内登录窗口标题（按供应商给名字）。 */
+    fun inAppLoginTitle(providerId: String): String =
+        runCatching { engine.inAppLoginTitle(providerId) }.getOrDefault("登录")
+
+    /** 内置 WebView 截到回调后换 token 并入库。 */
+    fun completeInAppLogin(
+        target: dev.aigw.core.gateway.InAppLoginTarget,
+        callbackUrl: String,
+    ) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(busy = "正在添加账号")
+            val outcome = withContext(Dispatchers.IO) {
+                engine.completeInAppLogin(target, callbackUrl)
+            }
+            _state.value = _state.value.copy(busy = "")
+            _state.value = _state.value.copy(
+                notice = if (outcome.ok) {
+                    "已添加账号：${outcome.nickname.ifEmpty { outcome.uid }}"
+                } else {
+                    outcome.error.ifEmpty { "登录失败" }
+                },
+            )
+            refreshAllCredits()
+        }
+    }
+
+    /** 用户在浏览器选择框里选定之后真正打开登录页。 */    fun launchLoginIn(browserPackage: String) {
         val pending = _state.value.pendingLogin ?: return
         _state.value = _state.value.copy(pendingLogin = null)
         if (!BrowserLauncher.open(app, pending.url, browserPackage)) {

@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.app.ui.providers.ProviderUiRegistry
 import dev.aigw.app.ui.login.WebCookieLoginActivity
+import dev.aigw.app.ui.login.WebLoginCallbackActivity
 /**
  * 供应商详情：登录入口 + 账号列表 + 专属设置。
  *
@@ -80,6 +81,33 @@ fun ProviderDetailScreen(
 
     val ctx = androidx.compose.ui.platform.LocalContext.current
     var pendingCookieProvider by remember { mutableStateOf("") }
+    var pendingInAppTarget by remember {
+        mutableStateOf<dev.aigw.core.gateway.InAppLoginTarget?>(null)
+    }
+
+    // 内置 WebView 登录：App 自己截回调 URL，不依赖浏览器的 127.0.0.1 访问策略
+    val inAppLoginLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val target = pendingInAppTarget
+        pendingInAppTarget = null
+        if (target == null) return@rememberLauncherForActivityResult
+        val callbackUrl = result.data
+            ?.getStringExtra(WebLoginCallbackActivity.EXTRA_RESULT_URL)
+            .orEmpty()
+        when {
+            // 设备授权型（WorkBuddy）：没有本地回调，关闭窗口后按原 state 轮询取结果
+            target.pollState.isNotEmpty() -> {
+                viewModel.startDevicePollAfterInApp(
+                    target.providerId,
+                    target.region,
+                    target.pollState,
+                )
+            }
+            callbackUrl.isEmpty() -> viewModel.notice("已取消登录")
+            else -> viewModel.completeInAppLogin(target, callbackUrl)
+        }
+    }
 
     // 内嵌网页抓 cookie 登录：需要读 WebView 的 cookie 存储，必须留在 App 内
     val cookieLoginLauncher = rememberLauncherForActivityResult(
@@ -109,6 +137,25 @@ fun ProviderDetailScreen(
             // 登录一律交给系统浏览器：本机 WebView 渲染异常（整页缩放错乱、输入框文字镜像），
             // 网关会在本地临时监听回调端口接住登录结果。
             onWebLogin = { id, region -> viewModel.beginBrowserLogin(id, region) },
+            onInAppLogin = { id, region ->
+                // 取登录目标（含要拦截的回调前缀）后立刻拉起 WebView。
+                // 不能用 beginBrowserLogin：那条路会真的监听本地端口，而 WebView
+                // 自己就截了回调，端口既不需要也可能已被占用。
+                viewModel.inAppLoginTarget(id, region) { target ->
+                    pendingInAppTarget = target
+                    inAppLoginLauncher.launch(
+                        android.content.Intent(ctx, WebLoginCallbackActivity::class.java).apply {
+                            putExtra(WebLoginCallbackActivity.EXTRA_START_URL, target.loginUrl)
+                            putExtra(WebLoginCallbackActivity.EXTRA_CALLBACK_PREFIX, target.callbackUrl)
+                            putExtra(WebLoginCallbackActivity.EXTRA_TITLE, viewModel.inAppLoginTitle(id))
+                            putExtra(
+                                WebLoginCallbackActivity.EXTRA_PASSIVE,
+                                target.pollState.isNotEmpty(),
+                            )
+                        },
+                    )
+                }
+            },
             onDeviceLogin = { id, region -> viewModel.beginDeviceLogin(id, region) },
             onSmsLogin = { id, phone, code, ccode, onResult ->
                 if (code.isEmpty()) {

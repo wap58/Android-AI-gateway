@@ -466,10 +466,10 @@ private fun ModelRow(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                // 主标题用**真实模型名**（Qwen3.7-Max），内部代号（qmodel_latest）
-                // 退到副标题 —— 用户认的是前者，代号只在复制/排障时才需要。
+                // 主标题用**完整 id**（qoder-cn/qfmodel），显示名退到副标题。
+                // 与参考成品一致：从模型页复制到客户端的是 id，摆大字便于直接看/抄。
                 Text(
-                    text = model.model.name.ifEmpty { model.fullId },
+                    text = model.fullId.ifEmpty { model.model.name },
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -482,8 +482,9 @@ private fun ModelRow(
             }
             Text(
                 text = buildString {
-                    // 副标题：调用用的完整 id + 上下文长度
-                    append(model.fullId)
+                    // 副标题：显示名（Qwen3.8-Flash 这类）+ 上下文长度。
+                    // 大字是 fullId（qoder-cn/qfmodel），两行各司其职，不能都塞 id。
+                    append(model.model.name.ifEmpty { model.model.id })
                     if (model.model.contextWindow > 0) {
                         append(" · 上下文 ").append(model.model.contextWindow)
                     }

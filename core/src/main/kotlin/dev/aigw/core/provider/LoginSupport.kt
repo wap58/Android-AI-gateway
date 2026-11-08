@@ -54,6 +54,15 @@ interface SmsLoginSupport {
 }
 
 interface LoopbackOAuthSupport {
+    /** 本地回调端口：上游对 redirect_uri 校验严格（如 Google 固定 51121、OpenAI 固定 1455），
+     *  由 provider 自己声明，网关只负责在该端口上接住回调。 */
+    val callbackPort: Int
+        get() = 0
+
+    /** 回调路径，默认 /auth/callback。 */
+    val callbackPath: String
+        get() = "/auth/callback"
+
     fun buildAuthUrl(): String
 
     /** 用回调 URL 里的 authorization code 换凭证。 */

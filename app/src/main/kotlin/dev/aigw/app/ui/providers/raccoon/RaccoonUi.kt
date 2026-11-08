@@ -65,6 +65,11 @@ object RaccoonUi : ProviderUi {
                 ) {
                     Text("在浏览器中打开小浣熊登录页")
                 }
+                // 部分手机浏览器禁止访问本机回环地址（实测 Alook 连 127.0.0.1:8888 都打不开），
+                // 授权成功后跳 127.0.0.1 的回调会停在空白页。内置 WebView 由 App 自己截回调。
+                OutlineActionButton(text = "在应用内登录（浏览器打不开时用这个）") {
+                    actions.onInAppLogin(id, "")
+                }
                 OutlineActionButton(
                     text = if (expanded) "收起粘贴导入" else "粘贴回调链接导入",
                 ) { expanded = !expanded }

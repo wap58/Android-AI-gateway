@@ -5,6 +5,7 @@ import dev.aigw.core.provider.agnes.AgnesProvider
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.lingxi.LingxiProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
+import dev.aigw.core.provider.qoder.QoderProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeConstants
 import dev.aigw.core.provider.trae.TraeProvider
@@ -55,6 +56,14 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
             nowMillis = { engine.now() },
             // 接上 hooks：刷新失败从前静默无日志，排查「登录失效」时看不到任何原因
             hooks = engine.hooks,
+        ),
+    )
+
+    // Qoder（国内 qoder.com.cn / 国际 qoder.sh）：设备授权 + COSY 签名的推理网关
+    registry.register(
+        QoderProvider(
+            hooks = engine.hooks,
+            nowMillis = { engine.now() },
         ),
     )
 

@@ -38,6 +38,16 @@ class GatewayHttpServer(
     port: Int,
 ) : NanoHTTPD(host, port) {
 
+    init {
+        // 默认的 thread-per-request 无上限也无排队：慢客户端（建连后不发数据）会把线程顶到内存上限，
+        // 表现为整机卡死而不是报错。换有界线程池——线程封顶、超出进有界队列、队列也满才拒绝。
+        setAsyncRunner(
+            BoundedAsyncRunner(
+                onReject = { engine.logWarn(it) },
+            ),
+        )
+    }
+
     fun listeningAddress(): String = (hostname ?: "0.0.0.0") + ":" + listeningPort
 
     /**
@@ -1120,11 +1130,23 @@ class GatewayHttpServer(
         return 0L
     }
 
+    /**
+     * 只替换 body 里的 `model` 字段，**不做整棵 JSON 树重序列化**。
+     *
+     * 为什么不能 `JsonParser.parse(...) + obj.toString()`：
+     * Gson 默认会把非 ASCII 转义成 `\uXXXX`，键序与空白也会变，
+     * 于是「用户什么都没改」的请求体也被改了字节。
+     * - 对 Qoder 这种**签名覆盖 body** 的上游，字节一变签名立刻失效（401/4001）；
+     * - 对普通上游，中文被转义后个别实现也会出问题。
+     * 所以这里用字符串级替换，只动 model 这一个值，其余字节原样保留。
+     */
     private fun withModel(body: String, model: String): String {
         if (model.isEmpty()) return body
-        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return body
-        obj.addProperty("model", model)
-        return obj.toString()
+        // 只匹配顶层 "model": "..." 形式；messages 里不会出现这个键
+        val regex = Regex("\"model\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\"")
+        val match = regex.find(body) ?: return body
+        val escaped = model.replace("\\", "\\\\").replace("\"", "\\\"")
+        return body.replaceRange(match.range, "\"model\":\"$escaped\"")
     }
 
     private fun json(status: Int, body: String): NanoHTTPD.Response =

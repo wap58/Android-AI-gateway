@@ -25,6 +25,15 @@ class ProviderUiActions(
     val onWebLogin: (providerId: String, region: String) -> Unit = { _, _ -> },
     /** 设备授权登录（WorkBuddy）：拉起 WebView 并开始轮询；region 由组件按滑块传入。 */
     val onDeviceLogin: (providerId: String, region: String) -> Unit = { _, _ -> },
+    /**
+     * 拉起**内置 WebView** 登录（小浣熊这类回调型）。
+     *
+     * 与 [onWebLogin] 的区别：后者把登录交给系统浏览器，靠本机端口接回调——
+     * 但手机浏览器普遍禁止访问 127.0.0.1（Alook 连 `127.0.0.1:8888` 都打不开），
+     * 登录成功后跳回调会停在空白页。内置 WebView 由 App 自己拦截回调 URL，
+     * 不经过任何浏览器的回环策略。
+     */
+    val onInAppLogin: (providerId: String, region: String) -> Unit = { _, _ -> },
     /** 读供应商私有设置项（同步，取引擎内存值）。 */
     val providerOptionOf: (providerId: String, key: String, fallback: String) -> String =
         { _, _, fallback -> fallback },

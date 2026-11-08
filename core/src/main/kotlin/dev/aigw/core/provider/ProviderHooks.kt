@@ -15,4 +15,11 @@ class ProviderHooks(
     val onLog: (String) -> Unit = {},
     /** 详细日志：provider 上报真实发给上游的内容（如 Antigravity 的 envelope），仅开启详细日志时生效。 */
     val onVerbose: (tag: String, text: String) -> Unit = { _, _ -> },
+    /**
+     * 把原始请求/响应落到磁盘，供离线比对。
+     *
+     * 排查「上游拒收但字段看起来全对」这类问题时，唯一可靠的依据是
+     * 真实发出的字节；应用内日志有环形缓冲、logcat 抓不到 stderr，
+     * 所以需要一个由宿主（app 层）提供可写目录的落盘出口。
+     */
 )

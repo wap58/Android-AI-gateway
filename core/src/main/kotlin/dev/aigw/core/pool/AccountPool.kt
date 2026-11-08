@@ -213,8 +213,11 @@ class AccountPool(
             entry.enabled = enabled
             if (!enabled) {
                 if (reason.isNotEmpty()) entry.reason = reason
-            } else if (entry.reason.isNotEmpty() && !entry.disabled) {
-                entry.reason = ""
+            } else {
+                // 手动打开开关时一并解除「凭证失效」标记：
+                // 那个标记可能来自误判（如排队被当成 401），用户明确要启用就该放行。
+                entry.disabled = false
+                if (entry.reason.isNotEmpty()) entry.reason = ""
             }
             true
         }
@@ -261,20 +264,44 @@ class AccountPool(
     // ---------------------------------------------------------------- 选号
 
     /** 取该 provider 可用账号中余额最高者；[exclude] 用于同一请求内的换号重试。 */
-    fun pick(providerId: String, exclude: Set<String> = emptySet()): ProviderAccount? = lock.read {
-        val group = byProvider[providerId] ?: return@read null
+    /**
+     * 选一个账号。[inFlightOf] 给出某 uid 当前的在途请求数，用于跳过已满载的账号。
+     *
+     * 为什么必须传进来：选号与取并发许可若分成两步（先选号、再 acquire），两个并发请求会
+     * 同时选中同一个空闲账号，后一个只好排队——多账号却看起来在串行。把在途数并入选号条件，
+     * 第二个请求就会自动落到另一个空闲账号上。
+     *
+     * 返回值第二项表示「是否因全部满载而没有可用账号」（true 时第一项为 null），
+     * 调用方据此区分「没账号」和「都忙」，对客户端给出不同的错误码。
+     */
+    fun pickDetailed(
+        providerId: String,
+        exclude: Set<String> = emptySet(),
+        inFlightOf: (String) -> Int = { 0 },
+        maxPerAccount: Int = Int.MAX_VALUE,
+    ): Pair<ProviderAccount?, Boolean> = lock.read {
+        val group = byProvider[providerId] ?: return@read (null to false)
         var best: Entry? = null
+        var sawFull = false
         for (entry in group) {
             if (entry.account.uid in exclude) continue
             if (!entry.healthy()) continue
+            if (maxPerAccount < Int.MAX_VALUE && inFlightOf(entry.account.uid) >= maxPerAccount) {
+                sawFull = true
+                continue
+            }
             // 先比优先级（用户手动排序，最高优先），同级再比余额：
             // 用户把某个号调到最上面，就是希望它先被用，不该被余额更高的号盖掉。
             val better = best == null || entry.priority > best.priority ||
                 (entry.priority == best.priority && entry.credits > best.credits)
             if (better) best = entry
         }
-        best?.account
+        best?.account to (best == null && sawFull)
     }
+
+    /** 不关心在途的普通选号（列表展示、模型目录等场景）。 */
+    fun pick(providerId: String, exclude: Set<String> = emptySet()): ProviderAccount? =
+        pickDetailed(providerId, exclude).first
 
     /** 供界面展示的摘要；[providerId] 为空时统计全部。 */
     fun summary(providerId: String? = null): PoolSummary = lock.read {

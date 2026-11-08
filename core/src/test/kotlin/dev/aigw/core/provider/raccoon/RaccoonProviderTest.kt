@@ -39,12 +39,41 @@ class RaccoonProviderTest {
     )
 
     @Test
-    fun `登录 URL 带 redirect 且不带 login_source=desktop`() {
+    fun `登录 URL 走 loopback 通道且满足授权页硬校验`() {
+        // 2026-11-06 实测：系统自带浏览器 / Alook 在小浣熊登录成功后停在空白页。
+        // 根因是授权页把回调投递到 window.open 出来的 popup，手机浏览器拦截了 popup，
+        // 投递静默失败（Edge、360 极速允许 popup 所以能添加账号）。
+        //
+        // 走 `login_source=desktop` + `desktop_callback=loopback` 时，授权页改用
+        // T() 里的 r.navigate() 直接导航，不依赖 popup —— 任何浏览器都能完成。
+        // 但授权页 v() 对这条通道有硬校验，三处都必须精确满足，否则参数被判非法、
+        // 静默回落到 popup 分支：
+        //   redirect 必须匹配 ^http://127.0.0.1:<1024-65535>/auth/callback$
+        //   state 必须是 64 位小写十六进制
+        //   不能带 ide
         val provider = RaccoonProvider(host = "https://xiaohuanxiong.com")
-        val ticket = provider.beginWebLogin("http://127.0.0.1:51122/callback")
+        val callback = "http://127.0.0.1:51122/auth/callback"
+        val ticket = provider.beginWebLogin(callback)
+
         assertTrue(ticket.loginUrl.startsWith("https://xiaohuanxiong.com/code/authorize?"), ticket.loginUrl)
-        assertTrue(ticket.loginUrl.contains("redirect=http%3A%2F%2F127.0.0.1%3A51122%2Fcallback"), ticket.loginUrl)
-        assertTrue(!ticket.loginUrl.contains("login_source=desktop"), "带 desktop 会走 office-raccoon:// 分支跳不回来：${ticket.loginUrl}")
+        assertTrue(
+            ticket.loginUrl.contains("redirect=http%3A%2F%2F127.0.0.1%3A51122%2Fauth%2Fcallback"),
+            "回调路径必须是 /auth/callback：${ticket.loginUrl}",
+        )
+        assertTrue(
+            ticket.loginUrl.contains("login_source=desktop"),
+            "必须带 desktop 才会走 navigate 而不是 popup：${ticket.loginUrl}",
+        )
+        assertTrue(
+            ticket.loginUrl.contains("desktop_callback=loopback"),
+            "必须显式声明 loopback 通道：${ticket.loginUrl}",
+        )
+        assertTrue(!ticket.loginUrl.contains("ide="), "带 ide 会让 loopback 校验失败：${ticket.loginUrl}")
+
+        // state 必须是 64 位小写十六进制，否则 v() 直接判非法
+        val state = Regex("state=([^&]+)").find(ticket.loginUrl)?.groupValues?.get(1).orEmpty()
+        assertEquals(64, state.length, "state 必须 64 位：$state")
+        assertTrue(state.all { it in "0123456789abcdef" }, "state 必须是十六进制：$state")
     }
 
     @Test

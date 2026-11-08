@@ -50,6 +50,13 @@
         <!-- 内嵌网页登录：没有 OAuth 回调的上游（WPS 灵犀）在这里登录后抓 cookie -->
 
 
+        <!-- 内置 WebView 登录：App 自己截回调 URL，绕开浏览器对 127.0.0.1 的限制 -->
+        <activity
+            android:name=".ui.login.WebLoginCallbackActivity"
+            android:exported="false"
+            android:label="登录"
+            android:windowSoftInputMode="adjustResize" />
+
         <activity
             android:name=".ui.login.WebCookieLoginActivity"
             android:exported="false"

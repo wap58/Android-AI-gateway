@@ -1030,7 +1030,7 @@ class CodeBuddyProvider(
                     //   每个请求都再刷一次，刷新频率=请求频率——正是上游风控吊销 token 的触发条件。
                     expiresAt = resolveRefreshedExpiry(parsed.expiresAt, parsed.accessToken, nowSeconds),
                 )
-                hooks.onVerbose("刷新凭证", text)
+                hooks.onVerbose("刷新凭证", "len=${text.length}")
                 lastRefreshed = lastRefreshed + (uid to refreshed)
                 if (lastRefreshFailedAt.containsKey(uid)) lastRefreshFailedAt = lastRefreshFailedAt - uid
                 toProviderAccount(refreshed)

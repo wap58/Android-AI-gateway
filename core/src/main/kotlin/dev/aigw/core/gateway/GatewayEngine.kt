@@ -10,6 +10,8 @@ import dev.aigw.core.provider.CreditInfo
 import dev.aigw.core.provider.DeviceAuthPoll
 import dev.aigw.core.provider.DeviceAuthTicket
 import dev.aigw.core.provider.DeviceCodeSupport
+import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
+import dev.aigw.core.provider.qoder.QoderProvider
 import dev.aigw.core.provider.ErrorKind
 import dev.aigw.core.provider.LoopbackOAuthSupport
 import dev.aigw.core.provider.Provider
@@ -27,7 +29,6 @@ import dev.aigw.core.provider.RoutedModel
 import dev.aigw.core.provider.SmsLoginSupport
 import dev.aigw.core.provider.WebLoginSupport
 import dev.aigw.core.provider.WebLoginTicket
-import dev.aigw.core.provider.antigravity.AntigravityProvider
 import dev.aigw.core.provider.custom.CustomProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeProvider
@@ -159,6 +160,26 @@ data class Route(val providerId: String, val model: String, val region: String? 
  * 否则会打到另一个站点、永远查不到这个 state。
  */
 data class BrowserLoginTicket(val loginUrl: String, val pollState: String = "", val region: String = "")
+
+/**
+ * 内置 WebView 登录的加载目标。
+ *
+ * [callbackUrl] 同时用作**拦截前缀**：WebView 里出现的导航只要以它开头，
+ * 就说明上游已经把 `code` 回推过来了，App 直接从 URL 取参数，不让请求真的发出去。
+ */
+data class InAppLoginTarget(
+    val loginUrl: String,
+    val callbackUrl: String,
+    val providerId: String,
+    val region: String = "",
+    /**
+     * 设备授权型（WorkBuddy）轮询用的 state。
+     *
+     * 设备授权没有本地回调，取结果靠轮询；而轮询必须用**打开授权页时的那个 state**，
+     * 重新申请会拿到新的 state，和用户刚授权的那个对不上，永远轮询不到。
+     */
+    val pollState: String = "",
+)
 
 /** 模型探测结果：延迟（毫秒）与失败原因。 */
 data class ProbeResult(val latencyMs: Long, val error: String = "")
@@ -1167,7 +1188,7 @@ class GatewayEngine(
      * 打开系统浏览器完成登录，返回要打开的 URL。
      *
      * - **Trae**：临时监听 51120 接住 `/authorize` 回调；
-     * - **Antigravity**：监听 51121（Google 客户端注册的 redirect_uri 固定为此端口）；
+     * - **LoopbackOAuth**：端口与路径由 provider 自己声明（上游对 redirect_uri 校验严格）；
      * - **WorkBuddy**：没有本地回调，返回授权页 URL 并附上轮询用的 state。
      *
      * 用系统浏览器而不是内置 WebView，是为了绕开设备 WebView 的渲染异常；
@@ -1179,6 +1200,8 @@ class GatewayEngine(
         // 区域优先用调用方显式传入的：供应商设置是异步写入的，登录页与之后的轮询必须用同一区域，
         // 否则会在 A 站点创建 state、却去 B 站点轮询
         val loginRegion = region.ifEmpty { providerSettings(providerId).option("region", "") }
+        log("浏览器登录开始：provider=$providerId region=${loginRegion.ifEmpty { "-" }} " +
+            "isWebLogin=${provider is WebLoginSupport}")
         return when {
             provider is WebLoginSupport && (providerId == TraeProvider.ID || providerId == RaccoonProvider.ID) -> {
                 val (port, path) = if (providerId == RaccoonProvider.ID) {
@@ -1196,7 +1219,7 @@ class GatewayEngine(
             }
 
             provider is LoopbackOAuthSupport -> {
-                startCallbackServer(AntigravityProvider.CALLBACK_PORT, AntigravityProvider.CALLBACK_PATH) { url ->
+                startCallbackServer(provider.callbackPort, provider.callbackPath) { url ->
                     val outcome = completeOAuth(providerId, url)
                     resultPage(outcome.ok, outcome.nickname.ifEmpty { outcome.uid }, outcome.error)
                 }
@@ -1213,20 +1236,83 @@ class GatewayEngine(
         }
     }
 
+    /**
+     * 内置 WebView 登录：只返回要加载的 URL 与要拦截的回调前缀，**不监听本地端口**。
+     *
+     * 与 [beginBrowserLogin] 的差别就在这：浏览器方式需要真实监听端口，
+     * 而内置 WebView 由 App 自己截下回调 URL，端口根本不需要存在。
+     */
+    fun inAppLoginTarget(providerId: String, region: String = ""): InAppLoginTarget {
+        val provider = registry.get(providerId) ?: throw IllegalStateException("未知供应商：$providerId")
+        val loginRegion = region.ifEmpty { providerSettings(providerId).option("region", "") }
+
+        // ★ 先判设备授权型，再判 WebLoginSupport：
+        //   WorkBuddy / Qoder 只有 DeviceCodeSupport，没有 WebLoginSupport，
+        //   顺序反了会被前面的检查直接挡掉（现象：「该供应商不支持网页登录」）。
+        if (provider is DeviceCodeSupport &&
+            providerId !in setOf(RaccoonProvider.ID, TraeProvider.ID)
+        ) {
+            val ticket = provider.startDeviceAuth(loginRegion)
+            log("应用内登录开始（设备授权）：provider=$providerId")
+            return InAppLoginTarget(
+                loginUrl = ticket.loginUrl,
+                callbackUrl = NO_LOCAL_CALLBACK,
+                providerId = providerId,
+                region = loginRegion,
+                pollState = ticket.state,
+            )
+        }
+
+        if (provider !is WebLoginSupport) {
+            throw IllegalStateException("该供应商不支持网页登录")
+        }
+        // Qoder 走**设备授权轮询**（不是 scheme 回调）：
+        // scheme 回调只回一枚临时 access token，没有 refresh_token，
+        // 几个小时后就 401 TOKEN_EXPIRE 且无法刷新——国际版额度/签到一直失败就是这个原因。
+        // 轮询路径能同时拿到 access + refresh，凭证可长期自续。
+        val (port, path) = when (providerId) {
+            RaccoonProvider.ID -> RACCOON_CALLBACK_PORT to RACCOON_CALLBACK_PATH
+            TraeProvider.ID -> TRAE_CALLBACK_PORT to TRAE_CALLBACK_PATH
+            else -> throw IllegalStateException("该供应商暂不支持应用内登录")
+        }
+        val callbackUrl = "http://127.0.0.1:$port$path"
+        val ticket = provider.beginWebLogin(callbackUrl, loginRegion)
+        log("应用内登录开始：provider=$providerId")
+        return InAppLoginTarget(ticket.loginUrl, callbackUrl, providerId, loginRegion)
+    }
+
+    /** 内置 WebView 截到回调后，用它换 token 并入库。 */
+    fun completeInAppLogin(target: InAppLoginTarget, callbackUrl: String): LoginOutcome {
+        val outcome = completeWebLogin(target.providerId, callbackUrl)
+        log("应用内登录结果：provider=${target.providerId} ok=${outcome.ok} ${outcome.error}")
+        return outcome
+    }
+
+    /** 应用内登录窗口的标题（按供应商给名字，避免所有上游都显示「登录」）。 */
+    fun inAppLoginTitle(providerId: String): String = when (providerId) {
+        RaccoonProvider.ID -> "小浣熊登录"
+        TraeProvider.ID -> "Trae 登录"
+        CodeBuddyProvider.ID -> "WorkBuddy 登录"
+        else -> "登录"
+    }
+
     private fun startCallbackServer(port: Int, path: String, handler: (String) -> String) {
         val server = try {
             LoopbackCallbackServer(port, path) { url ->
+                log("收到登录回调：${url.take(120)}")
                 val html = handler(url)
                 // 先让响应写完再关端口，否则浏览器会看到连接被重置
                 stopCallbackServerSoon()
                 html
             }.also { it.startServer() }
         } catch (e: Exception) {
+            // 这条路径失败时必须留痕：调用方把异常转成界面提示就丢了，
+            // 排查「点了登录没反应」时完全没有线索。
+            logWarn("无法监听本地回调端口 $port：${e.javaClass.simpleName} ${e.message}")
             throw IllegalStateException("无法监听本地回调端口 $port：${e.message}")
         }
         callbackServer = server
         log("已监听本地回调 http://127.0.0.1:$port$path")
-        // 用户长时间不完成登录时释放端口，避免一直占着
         Thread {
             runCatching { Thread.sleep(CALLBACK_TIMEOUT_MS) }
             if (callbackServer === server) {
@@ -1698,14 +1784,21 @@ class GatewayEngine(
      * 在指定供应商中选号；[region] 非空时只选属于该区域且处于可用状态的账号中余额最高者。
      */
     fun pickAccount(providerId: String, exclude: Set<String> = emptySet(), region: String? = null): ProviderAccount? {
-        if (region == null) return pool.pick(providerId, exclude)
-        val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport ?: return pool.pick(providerId, exclude)
+        // 传在途数：选号时就把已满载的账号排除掉。否则会出现「选了个满载号 → 取许可失败 → 换号重试」
+        // 的空转，多账号场景下表现为本该并行却在串行。
+        val cfg = failoverSettings.concurrency
+        val inFlight: (String) -> Int = { uid -> concurrencyGate.inFlightOf("$providerId/$uid") }
+        val maxPer = cfg.maxPerAccount
+        if (region == null) return pool.pickDetailed(providerId, exclude, inFlight, maxPer).first
+        val regionAware = registry.get(providerId) as? dev.aigw.core.provider.RegionAwareSupport
+            ?: return pool.pickDetailed(providerId, exclude, inFlight, maxPer).first
         // 一次取状态快照（单次加锁），避免对每个账号各加一次读锁
         val statusByUid = pool.statuses(providerId).associateBy { it.uid }
         return pool.accounts(providerId)
             .filter { account -> account.uid !in exclude }
             .filter { account -> statusByUid[account.uid]?.usable == true }
             .filter { account -> regionAware.regionOf(account) == region }
+            .filter { account -> inFlight(account.uid) < maxPer }
             .maxByOrNull { account -> statusByUid[account.uid]?.credits ?: 0L }
     }
 
@@ -1856,6 +1949,10 @@ class GatewayEngine(
             // 区域型前缀：trae-cn / trae-global（少了这条，`trae-cn/模型名` 会整个
             // 当成模型名发给上游，Trae 直接以 4001「param is invalid」拒绝）
             lower.startsWith("trae-") -> "trae"
+            // Qoder 的区域前缀 qoder-cn / qoder-intl。少了这条时
+            // `qoder-cn/qfmodel` 会整串当成模型名发给上游，上游直接
+            // 4001「param is invalid」——这正是对话一直失败的根因。
+            lower.startsWith("qoder-") -> "qoder"
             lower in listOf("loomy", "iflytek", "spark", "xf") -> "loomy"
             else -> if (lower.startsWith("custom:")) lower else null
         }
@@ -1868,12 +1965,45 @@ class GatewayEngine(
             lower.startsWith("claude") && (lower.contains("thinking") || lower.contains("4-6") || lower.contains("sonnet") || lower.contains("opus")) -> "antigravity"
             lower.startsWith("doubao") || lower.startsWith("seed-") -> "trae"
             lower.startsWith("spark") || lower.contains("星火") -> "loomy"
+            // 爱思的模型名统一以 agnes- 开头（agnes-3.0-flash 等）。
+            // 不认这条时，无前缀请求会被兜底路由到别的供应商，
+            // 那个供应商不认识这个模型，最终给客户端的就是 4001 param is invalid。
+            lower.startsWith("agnes-") -> "agnes"
+            // Qoder 的模型有两种写法会进到这里：
+            //   1. 上游 key（qmodel_38max / qfmodel / smodel ...）
+            //   2. 显示名（Qwen3.8-Flash / Qoder-CN/Qwen3.8-Flash 去掉前缀后）
+            // 只有按 key 匹配时，Qwen3.8-Flash 会先命中下面的 qwen 分支被送到
+            // codebuddy/trae，那些供应商不认识这个模型，客户端收到的就是 4001。
+            lower in QODER_MODEL_KEYS -> "qoder"
+            lower in QODER_MODEL_NAMES -> "qoder"
             lower.startsWith("deepseek") || lower.startsWith("kimi") || lower.startsWith("minimax") || lower.startsWith("glm") || lower.startsWith("qwen") -> {
                 // 只认已启用且有账号的供应商，避免推导到一个被用户关掉的供应商
                 listOf("codebuddy", "trae").firstOrNull { isDispatchable(it) }
             }
             else -> null
         }
+    }
+
+    /** Qoder 的模型键（两区合集），供无前缀时的供应商推导使用。 */
+    private val QODER_MODEL_KEYS: Set<String> by lazy {
+        (dev.aigw.core.provider.qoder.QoderCatalog.CN +
+            dev.aigw.core.provider.qoder.QoderCatalog.INTL)
+            .map { it.key.lowercase() }
+            .toSet()
+    }
+
+    /**
+     * Qoder 的模型显示名（Qwen3.8-Flash / Sonus / Kimi-K3.1-Pro ...）。
+     *
+     * 客户端常直接拿显示名当 model 发（界面上看到什么就发什么），
+     * 而 `qwen` / `kimi` / `deepseek` 这些前缀会先命中别的供应商分支，
+     * 必须让 Qoder 的显示名优先匹配。
+     */
+    private val QODER_MODEL_NAMES: Set<String> by lazy {
+        (dev.aigw.core.provider.qoder.QoderCatalog.CN +
+            dev.aigw.core.provider.qoder.QoderCatalog.INTL)
+            .map { it.displayName.lowercase() }
+            .toSet()
     }
 
     // ------------------------------------------------------------------ 数据管理
@@ -1983,13 +2113,22 @@ class GatewayEngine(
          */
         private const val MAX_BATCH_PARALLELISM = 12
 
-        /** Trae 登录回调用的本地端口（避开 Antigravity 的 51121）。 */
+        /** Trae 登录回调用的本地端口（避开固定端口的 OAuth 供应商）。 */
         const val TRAE_CALLBACK_PORT = 51120
         const val TRAE_CALLBACK_PATH = "/authorize"
 
         /** 小浣熊（商汤）登录回调用的本地端口。 */
         const val RACCOON_CALLBACK_PORT = 51122
-        const val RACCOON_CALLBACK_PATH = "/callback"
+        // 必须精确是 /auth/callback：授权页 loopback 校验的正则是
+        // ^http://127.0.0.1:<port>/auth/callback$，改成别的路径会被判非法、
+        // 回落 popup 投递，手机浏览器上就是空白页。
+        const val RACCOON_CALLBACK_PATH = "/auth/callback"
+
+        /**
+         * 设备授权型的占位回调前缀：它永远不会出现在 URL 里，
+         * 因此 WebView 不会误判为「登录完成」，只会在用户手动关闭时结束。
+         */
+        const val NO_LOCAL_CALLBACK = "tyd://no-local-callback"
 
         /** 登录回调监听的存活上限。 */
         const val CALLBACK_TIMEOUT_MS = 5L * 60 * 1000
