@@ -61,20 +61,20 @@ jobs:
       - name: 读取版本号
         id: version
         run: |
-          # 基版本取自 build.gradle（如 1.0.0），CI 包额外加一段（run_number）：
-          #   1.0.0 → 1.0.0.153
-          # 为什么加这一段：测试通道是覆盖发布到固定 tag ci-latest，Release 的
-          # published_at 不会变，只比 versionName 会永远显示「已是最新」。
-          # 加一段后 isNewer() 能直接按数字比较（[1,0,0,153] > [1,0,0,152]）。
-          # 正式版仍走 android-release.yml，用 build.gradle 里的三段，不加后缀。
+          # 基版本取自 build.gradle（如 1.0.0），CI 包版本名带 -ci{run} 后缀：
+          #   1.0.0 → 1.0.0-ci153
+          # 为什么用「ci + 数字」而不是纯后缀或第四段数字：
+          #   1) 正式版保持三段（1.0.0），显示干净；
+          #   2) 两个 CI 包之间靠 run_number 区分（1.0.0-ci152 < 1.0.0-ci153）；
+          #   3) isNewer() 数字段相同时按「带字母 = 测试版」判定，
+          #      从 CI 版切回公开版能检测到正式版更新。
+          # versionCode 单独递增（见下），覆盖安装靠它，不靠 versionName。
           BASE=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
-          VERSION="${BASE}.${{ github.run_number }}"
+          VERSION="${BASE}-ci${{ github.run_number }}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "基版本 $BASE → CI 版本 $VERSION"
-          # 把加好段的版本名写回 gradle，让 APK 里也是它
           sed -i -E "s/^(\s*versionName\s*=\s*)\".*\"/\1\"$VERSION\"/" app/build.gradle.kts
-          # versionCode 也要递增：同 code 的包无法覆盖安装到更新的 code 上，
-          # 之前测试通道出现过「新包装不上旧包」的问题。
+          # versionCode 必须递增：覆盖安装只认 code，同 code 装不上去
           CODE=$(grep -E '^\s*versionCode\s*=' app/build.gradle.kts | head -n1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
           NEWCODE=$((CODE + ${{ github.run_number }}))
           sed -i -E "s/^(\s*versionCode\s*=\s*)[0-9]+/\1$NEWCODE/" app/build.gradle.kts

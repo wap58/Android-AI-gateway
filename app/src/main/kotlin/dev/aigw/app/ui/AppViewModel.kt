@@ -2161,6 +2161,13 @@ class AppViewModel(
             val b = l.getOrElse(i) { 0 }
             if (a != b) return a > b
         }
+        // 数字段完全相同：带后缀的是测试包（如 1.0.0-ci），不带后缀的是正式版。
+        // 这样从 CI 版切回公开版时能检测到「有正式版可用」，否则两边都是 [1,0,0]
+        // 会判为相等、永远提示「已是最新」，用户换不回正式版。
+        fun isPrerelease(v: String) = Regex("""[A-Za-z]""").containsMatchIn(v)
+        val rPre = isPrerelease(remote)
+        val lPre = isPrerelease(local)
+        if (rPre != lPre) return !rPre
         return false
     }
 
