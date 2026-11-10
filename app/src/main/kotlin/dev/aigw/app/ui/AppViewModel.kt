@@ -2120,15 +2120,22 @@ class AppViewModel(
             if (version.isEmpty()) throw IllegalStateException("未找到版本信息")
             val url = obj.get("html_url")?.asString.orEmpty().ifEmpty { "$PROJECT_URL/releases" }
             val notes = obj.get("body")?.asString.orEmpty().trim()
-            val publishedAt = runCatching {
-                java.time.Instant.parse(obj.get("published_at")?.asString.orEmpty()).toEpochMilli()
-            }.getOrDefault(0L)
             // 找 APK 资产直链：有了它才能应用内下载，否则只能跳浏览器
-            val apkUrl = obj.getAsJsonArray("assets")
+            val apkAsset = obj.getAsJsonArray("assets")
                 ?.mapNotNull { it.asJsonObject }
                 ?.firstOrNull { it.get("name")?.asString?.endsWith(".apk", ignoreCase = true) == true }
-                ?.get("browser_download_url")?.asString
-                .orEmpty()
+            val apkUrl = apkAsset?.get("browser_download_url")?.asString.orEmpty()
+            // ★ 时间取「Release 发布时间」与「APK 资产更新时间」中较新的那个。
+            //   测试通道是覆盖发布到固定 tag ci-latest：Release 的 published_at 恒为第一次创建的时间，
+            //   每次覆盖只更新资产的 updated_at。只读 published_at 会让「同版本号重新打包」
+            //   永远判不出更新（rebuilt 分支形同虚设）。
+            val releaseTime = runCatching {
+                java.time.Instant.parse(obj.get("published_at")?.asString.orEmpty()).toEpochMilli()
+            }.getOrDefault(0L)
+            val assetTime = runCatching {
+                java.time.Instant.parse(apkAsset?.get("updated_at")?.asString.orEmpty()).toEpochMilli()
+            }.getOrDefault(0L)
+            val publishedAt = maxOf(releaseTime, assetTime)
             return UpdateInfo(
                 version = version,
                 url = url,
