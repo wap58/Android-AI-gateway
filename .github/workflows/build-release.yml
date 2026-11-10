@@ -81,11 +81,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "基版本 $BASE → CI 版本 $VERSION"
           sed -i -E "s/^(\s*versionName\s*=\s*)\".*\"/\1\"$VERSION\"/" app/build.gradle.kts
-          # versionCode 必须递增：覆盖安装只认 code，同 code 装不上去
-          CODE=$(grep -E '^\s*versionCode\s*=' app/build.gradle.kts | head -n1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
-          NEWCODE=$((CODE + ${{ github.run_number }}))
+          # versionCode 必须递增：覆盖安装只认 code，同 code 装不上去。
+          # 用 base + CI 计数器（不是 run_number）：run_number 会累加到几百，
+          # 让 code 无意义地跳号。计数器每轮 +1，code 也就每轮 +1。
+          BASE_CODE=$(grep -E '^\s*versionCode\s*=' app/build.gradle.kts | head -n1 | sed -E 's/[^0-9]*([0-9]+).*/\1/')
+          NEWCODE=$((BASE_CODE + CI_NO))
           sed -i -E "s/^(\s*versionCode\s*=\s*)[0-9]+/\1$NEWCODE/" app/build.gradle.kts
-          echo "versionCode $CODE → $NEWCODE"
+          echo "versionCode $BASE_CODE → $NEWCODE"
           grep -E '^\s*(versionCode|versionName)' app/build.gradle.kts
 
       # 计数器改动要提交回仓库，否则下次构建又从旧值开始，ci 编号会重复。
