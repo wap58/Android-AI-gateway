@@ -2148,28 +2148,15 @@ class AppViewModel(
         }
     }
 
-    /** 逐段比较版本号，远端更大返回 true。 */
-    private fun isNewer(remote: String, local: String): Boolean {
-        // 提取所有数字段比较，不能只按 . 和 - 切：
-        // CI 包的 versionName 形如 `0.3.5_ci_42`，按 . 切成 "5_ci_42" 后
-        // toIntOrNull() 返回 null 被丢弃，结果与 0.3.5 判为相等 → 永远检测不到更新。
-        fun nums(v: String) = Regex("""\d+""").findAll(v).map { it.value.toInt() }.toList()
-        val r = nums(remote)
-        val l = nums(local)
-        for (i in 0 until maxOf(r.size, l.size)) {
-            val a = r.getOrElse(i) { 0 }
-            val b = l.getOrElse(i) { 0 }
-            if (a != b) return a > b
-        }
-        // 数字段完全相同：带后缀的是测试包（如 1.0.0-ci），不带后缀的是正式版。
-        // 这样从 CI 版切回公开版时能检测到「有正式版可用」，否则两边都是 [1,0,0]
-        // 会判为相等、永远提示「已是最新」，用户换不回正式版。
-        fun isPrerelease(v: String) = Regex("""[A-Za-z]""").containsMatchIn(v)
-        val rPre = isPrerelease(remote)
-        val lPre = isPrerelease(local)
-        if (rPre != lPre) return !rPre
-        return false
-    }
+    /**
+     * 逐段比较版本号，远端更大返回 true。
+     *
+     * 规则见 [dev.aigw.core.util.VersionCompare]（core 里有单元测试锁着）：
+     * 测试版 `1.0.0-ci.153` 不算比正式版 `1.0.0` 新，这样从测试通道切回公开版
+     * 能检测到更新，不会永远卡在 CI 包上。
+     */
+    private fun isNewer(remote: String, local: String): Boolean =
+        dev.aigw.core.util.VersionCompare.isNewer(remote, local)
 
     /** 本机 APK 的安装/更新时间（毫秒）；读不到返回 0。 */
     private fun installedUpdateTime(): Long = runCatching {
