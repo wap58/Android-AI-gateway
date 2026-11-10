@@ -41,6 +41,14 @@ enum class ProviderCapability {
 const val ACTION_CHECKIN = "checkin"
 
 /**
+ * 只跑「每日」那一档签到，不带新手任务/成长中心。
+ *
+ * AutoClaw 用：账号卡上把「每日签到」和「新手任务」拆成两个按钮，
+ * 新手任务只能领一次，和每天签到的节奏不同，混在一个按钮里说不清。
+ */
+const val ACTION_CHECKIN_DAILY = "checkin_daily"
+
+/**
  * 账号自带的任务/成长中心一键领取。
  *
  * 各家含义不同，由 provider 自己解释：Loomy = 新手任务；WorkBuddy = 成长中心（任务+旅行+盲盒）。

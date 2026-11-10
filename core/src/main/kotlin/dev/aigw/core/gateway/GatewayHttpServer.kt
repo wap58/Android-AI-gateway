@@ -70,7 +70,7 @@ class GatewayHttpServer(
                 session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight() }
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/models" -> models(session)
-                session.method == NanoHTTPD.Method.GET && (uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits") -> credits(session)
+                session.method == NanoHTTPD.Method.GET && uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits" -> credits(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/healthz" ->
                     NanoHTTPD.newFixedLengthResponse(SimpleStatus(200, "OK"), "text/plain; charset=utf-8", "ok")
                 session.method == NanoHTTPD.Method.GET && uri == "/authorize" -> authorize(session)

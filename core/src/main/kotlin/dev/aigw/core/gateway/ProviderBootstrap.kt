@@ -5,6 +5,7 @@ import dev.aigw.core.provider.agnes.AgnesProvider
 import dev.aigw.core.provider.codebuddy.CodeBuddyProvider
 import dev.aigw.core.provider.lingxi.LingxiProvider
 import dev.aigw.core.provider.loomy.LoomyProvider
+import dev.aigw.core.provider.autoclaw.AutoClawProvider
 import dev.aigw.core.provider.qoder.QoderProvider
 import dev.aigw.core.provider.raccoon.RaccoonProvider
 import dev.aigw.core.provider.trae.TraeConstants
@@ -65,6 +66,11 @@ internal fun registerBuiltinProviders(engine: GatewayEngine) {
             hooks = engine.hooks,
             nowMillis = { engine.now() },
         ),
+    )
+
+    // AutoClaw（智谱 AutoGLM 客户端）：MD5 签名，route id 走 X-Request-Model
+    registry.register(
+        AutoClawProvider(hooks = engine.hooks),
     )
 
     registry.register(

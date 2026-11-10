@@ -346,6 +346,8 @@ private fun MainTabs(
                 state = state,
                 viewModel = viewModel,
                 openProviders = { onTab(Tab.Providers) },
+                openProviderDetail = { onSubPage(SubPage.ProviderDetail(it)) },
+                openCustomProvider = { onSubPage(SubPage.CustomProviderEdit(null)) },
                 openModels = { onSubPage(SubPage.Models()) },
                 openCredits = { onSubPage(SubPage.CreditCenter) },
                 openUsage = { onSubPage(SubPage.Usage) },

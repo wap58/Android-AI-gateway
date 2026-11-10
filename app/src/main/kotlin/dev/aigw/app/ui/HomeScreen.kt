@@ -26,7 +26,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,6 +68,10 @@ fun HomeScreen(
     state: AppUiState,
     viewModel: AppViewModel,
     openProviders: () -> Unit,
+    /** 进某个供应商的详情页（登录/添加账号都在里面）。 */
+    openProviderDetail: (String) -> Unit,
+    /** 新建自定义供应商。 */
+    openCustomProvider: () -> Unit,
     openModels: () -> Unit,
     openCredits: () -> Unit,
     openUsage: () -> Unit,
@@ -77,6 +84,9 @@ fun HomeScreen(
     val gold = LocalAppColors.current.goldStart
     val goldText = LocalAppColors.current.goldText
     val lanUrl = state.lanUrls.firstOrNull()
+
+    // 「账号就绪」卡片点开：先选供应商，再进它的详情页
+    var showAddAccount by remember { mutableStateOf(false) }
 
     // Android 13+ 通知权限被拒时前台服务照常跑，但常驻通知会被系统静默隐藏，
     // 用户看起来就是「服务没起来」；启动前先补上授权请求。
@@ -114,7 +124,16 @@ fun HomeScreen(
 
         FreeModelBanner(state, onOpen = openFreeModels, modifier = Modifier.staggeredAppear(1))
 
-        TelemetryGrid(state, openProviders, openModels, openCredits, openUsage, openLogs, Modifier.staggeredAppear(1))
+        TelemetryGrid(
+            state = state,
+            onOpenProviders = openProviders,
+            onAddAccount = { showAddAccount = true },
+            onOpenModels = openModels,
+            onOpenCredits = openCredits,
+            onOpenUsage = openUsage,
+            onOpenLogs = openLogs,
+            modifier = Modifier.staggeredAppear(1),
+        )
 
         // 批量动作进行中/结束：首页也要看得到进度与失败原因（签到按钮就在本页）
         BatchProgressHost(state.batchProgress)
@@ -201,6 +220,22 @@ fun HomeScreen(
 
         AntigravityQuotaSection(state, viewModel, baseIndex = 4)
     }
+
+    if (showAddAccount) {
+        AddAccountDialog(
+            providers = state.providers,
+            accountsOf = { id -> state.accounts.count { it.providerId == id } },
+            onDismiss = { showAddAccount = false },
+            onPick = { provider ->
+                showAddAccount = false
+                openProviderDetail(provider.id)
+            },
+            onAddCustom = {
+                showAddAccount = false
+                openCustomProvider()
+            },
+        )
+    }
 }
 
 /** 控制台卡：状态行 + 接入地址 + 启停与刷额度。 */
@@ -215,14 +250,21 @@ private fun ConsoleCard(
 ) {
     val gold = LocalAppColors.current.goldStart
     val ctx = LocalContext.current
-    // 版本号带上 versionCode，方便区分同 versionName 的多次本地构建
+    // 展示形如 v0.3.9 (135)：versionName 去掉末段 versionCode，再补回括号形式。
+    // 老版本 versionName 不带 code（如 0.1.1），此时直接 v0.1.1 (42)。
     val versionLabel = remember {
         runCatching {
             val pkg = ctx.packageManager.getPackageInfo(ctx.packageName, 0)
             val name = pkg.versionName.orEmpty()
             @Suppress("DEPRECATION")
             val code = pkg.versionCode
-            if (name.isEmpty()) "" else "v$name ($code)"
+            val parts = name.split('.')
+            val base = if (parts.size > 3 && parts.last().toIntOrNull() == code) {
+                parts.dropLast(1).joinToString(".")
+            } else {
+                name
+            }
+            if (base.isEmpty()) "" else "v$base ($code)"
         }.getOrDefault("")
     }
     SectionCard(modifier = Modifier.staggeredAppear(0)) {
@@ -498,6 +540,7 @@ private fun DrawScope.drawSeries(xs: FloatArray, ys: FloatArray, baseline: Float
 private fun TelemetryGrid(
     state: AppUiState,
     onOpenProviders: () -> Unit,
+    onAddAccount: () -> Unit,
     onOpenModels: () -> Unit,
     onOpenCredits: () -> Unit,
     onOpenUsage: () -> Unit,
@@ -507,7 +550,7 @@ private fun TelemetryGrid(
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             ProvidersTile(state, onOpenProviders, Modifier.weight(1f))
-            ReadinessTile(state, Modifier.weight(1f))
+            ReadinessTile(state, onAddAccount, Modifier.weight(1f))
             ModelsTile(state, onOpenModels, Modifier.weight(1f))
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -594,11 +637,11 @@ private fun ProvidersTile(state: AppUiState, onClick: () -> Unit, modifier: Modi
 }
 
 @Composable
-private fun ReadinessTile(state: AppUiState, modifier: Modifier) {
+private fun ReadinessTile(state: AppUiState, onClick: () -> Unit, modifier: Modifier) {
     val total = state.pool.total
     val usable = state.pool.usable
     val percent = if (total > 0) (usable.toFloat() / total * 100).toInt() else 0
-    Tile(modifier, "账号就绪") {
+    Tile(modifier, "账号就绪", onClick) {
         // 数字独占一行：账号变多（10/10、128/128）时与圆环同排会被折行、互相压住
         BigNumber(usable.toString(), suffix = "/ $total")
         Spacer(Modifier.height(2.dp))
