@@ -65,12 +65,19 @@ jobs:
           #   1.0.0 → 1.0.0-ci153
           # 为什么用「ci + 数字」而不是纯后缀或第四段数字：
           #   1) 正式版保持三段（1.0.0），显示干净；
-          #   2) 两个 CI 包之间靠 run_number 区分（1.0.0-ci152 < 1.0.0-ci153）；
+          #   1.0.0 → 1.0.0-ci1、1.0.0-ci2 …（.ci-build-number 里的计数器自增）
+          # 为什么用「ci + 递增数字」而不是 run_number 或第四段数字：
+          #   1) 正式版保持三段（1.0.0），显示干净；
+          #   2) 两个 CI 包之间靠计数器区分（ci1 < ci2 < ci3）；
           #   3) isNewer() 数字段相同时按「带字母 = 测试版」判定，
           #      从 CI 版切回公开版能检测到正式版更新。
           # versionCode 单独递增（见下），覆盖安装靠它，不靠 versionName。
           BASE=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
-          VERSION="${BASE}-ci${{ github.run_number }}"
+          # 计数器：没有就从 1 起；每次构建 +1 并写回，随提交进入仓库
+          CI_NO=$(cat .ci-build-number 2>/dev/null || echo 0)
+          CI_NO=$((CI_NO + 1))
+          echo "$CI_NO" > .ci-build-number
+          VERSION="${BASE}-ci${CI_NO}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "基版本 $BASE → CI 版本 $VERSION"
           sed -i -E "s/^(\s*versionName\s*=\s*)\".*\"/\1\"$VERSION\"/" app/build.gradle.kts
@@ -80,6 +87,16 @@ jobs:
           sed -i -E "s/^(\s*versionCode\s*=\s*)[0-9]+/\1$NEWCODE/" app/build.gradle.kts
           echo "versionCode $CODE → $NEWCODE"
           grep -E '^\s*(versionCode|versionName)' app/build.gradle.kts
+
+      # 计数器改动要提交回仓库，否则下次构建又从旧值开始，ci 编号会重复。
+      # 只在 CI 号的提交里出现，不影响源码改动历史。
+      - name: 提交 CI 计数器
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@local"
+          git add .ci-build-number
+          git diff --cached --quiet || git commit -m "ci: 构建号 $(cat .ci-build-number)"
+          git push || echo "推送计数器失败（可能是并发构建），不影响本次产物"
 
       - name: 打包 release
         run: gradle :app:assembleRelease --console=plain
