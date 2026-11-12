@@ -127,21 +127,50 @@ internal class AutoClawProvider(
         }.toString()
 
         // 1) 准备沙箱（缓存 → list → apply），没有沙箱无法对话
-        val box = sandbox.ensure(credential)
-        if (box == null) {
-            hooks.onLog("AutoClaw 拿不到沙箱，无法对话")
-            return FailedChatCall(503, "拿不到 AutoClaw 沙箱，请稍后重试")
-        }
+        // ★ 先保鲜凭证：access token 过期时上游会回 410000 / 401，
+        //   流式下更糟——错误 JSON 会被当成流数据转发，客户端只看到「上游流式响应没有任何数据」。
+        var usedCred = credential
+        var box: AutoClawSandbox.Box = sandbox.ensure(usedCred)
+            ?: run {
+                hooks.onLog("AutoClaw 拿不到沙箱，无法对话")
+                return FailedChatCall(503, "拿不到 AutoClaw 沙箱，请稍后重试")
+            }
         // 2) 唤醒（不唤醒会超时/503）
-        sandbox.wake(credential, box)
+        sandbox.wake(usedCred, box)
 
         hooks.onLog("AutoClaw 对话 model=$modelKey route=$routeId stream=$stream sandbox=${box.id} bodyLen=${outbound.length}")
 
         // 3) 打沙箱网关
-        val (status, input, err) = sandbox.chat(
-            credential, box, outbound, stream,
+        var (status, input, err) = sandbox.chat(
+            usedCred, box, outbound, stream,
             backendModel = AutoClawConstants.bodyModel(routeId),
         )
+
+        // ★ token 过期：刷新一次再重试。410000 / 401 / access token expired 都是同一个问题。
+        if (isTokenExpired(status, err)) {
+            hooks.onLog("AutoClaw token 已过期（HTTP $status），刷新后重试")
+            val refreshed = refreshAccount(account, 0)
+            if (refreshed != null) {
+                val newCred = AutoClawCredential.parse(refreshed.secret)
+                if (newCred != null) {
+                    hooks.onAccountUpdated(refreshed)
+                    usedCred = newCred
+                    val newBox = sandbox.ensure(usedCred)
+                    if (newBox != null) {
+                        box = newBox
+                        sandbox.wake(usedCred, box)
+                        val retry = sandbox.chat(
+                            usedCred, box, outbound, stream,
+                            backendModel = AutoClawConstants.bodyModel(routeId),
+                        )
+                        status = retry.first
+                        input = retry.second
+                        err = retry.third
+                    }
+                }
+            }
+        }
+
         if (status !in 200..299 || input == null) {
             hooks.onLog("AutoClaw 对话失败 HTTP $status：${err.take(300)}")
             return FailedChatCall(if (status == 0) 0 else status, mapError(status, err))
@@ -169,7 +198,51 @@ internal class AutoClawProvider(
         return StreamingChatCall(status, input) { runCatching { input.close() } }
     }
 
+    /** 上游的「凭证过期」判据：410000 / 401 / access token expired。 */
+    private fun isTokenExpired(status: Int, err: String): Boolean {
+        if (status == 401) return true
+        val text = err.lowercase()
+        return "410000" in text || "access token expired" in text || "token expired" in text
+    }
+
+    /**
+     * access token 是否临期（该刷新了）。
+     *
+     * 解析 JWT 的 `exp`；解析不出来时返回 **true**（宁可按临期处理，
+     * 因为刷新的代价远小于拿过期 token 去撞 401 后禁用账号）。
+     */
+    private fun isTokenExpiring(accessToken: String, skewSeconds: Long): Boolean {
+        val raw = accessToken.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        val parts = raw.split('.')
+        if (parts.size < 2) return true
+        val exp = runCatching {
+            val payload = java.util.Base64.getUrlDecoder().decode(parts[1])
+            val obj = JsonParser.parseString(String(payload, Charsets.UTF_8)).asJsonObject
+            obj.get("exp")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+        }.getOrDefault(0L)
+        if (exp <= 0L) return true
+        val now = System.currentTimeMillis() / 1000
+        val skew = if (skewSeconds > 0) skewSeconds else 300L
+        return now >= exp - skew
+    }
+
     // ------------------------------------------------------------------ 刷新
+
+    /**
+     * 刷新单飞锁：同一账号并发刷新只让一个真正发请求，其余等它的结果。
+     *
+     * ★ 为什么必须有（2026-11-11 线上掉线事故的根因）：
+     *   AutoClaw 的 refresh 会**轮换 refresh_token** —— 响应里给新的，
+     *   旧的立即作废。没有单飞时，两个并发请求各拿同一个 refresh_token 去刷，
+     *   第一个成功（旧 token 作废），第二个必然 `400000 User not logged in`。
+     *   配合「每次对话都刷新」的旧逻辑，账号会被高频并发刷新打成掉线。
+     *
+     * 参考实现用进程级 `refresh_flight` 表做同样的事（见 Agent2Providers 的 refresh.rs）。
+     */
+    private val refreshLocks = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+    /** 最近一次刷新结果缓存：并发等待者直接复用它，不再发请求。 */
+    private val refreshResults = java.util.concurrent.ConcurrentHashMap<String, ProviderAccount>()
 
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val credential = AutoClawCredential.parse(account.secret) ?: return null
@@ -177,6 +250,31 @@ internal class AutoClawProvider(
             hooks.onLog("AutoClaw 刷新 → 该账号没有 refresh_token，无法刷新")
             return null
         }
+        // 没临期就别刷：每次对话都刷会多一次上游往返，还会因高频刷新触发 token 轮换
+        if (!isTokenExpiring(credential.accessToken, skewSeconds)) {
+            return null
+        }
+
+        // ★ 单飞：同一账号串行刷新，后到者复用前者的结果
+        val lock = refreshLocks.computeIfAbsent(account.uid) { Any() }
+        synchronized(lock) {
+            // 拿到锁后先看别人是不是刚刷完（refresh_token 指纹变了就是刷过了）
+            val cached = refreshResults[account.uid]
+            if (cached != null) {
+                val cachedCred = AutoClawCredential.parse(cached.secret)
+                if (cachedCred != null && cachedCred.refreshToken != credential.refreshToken) {
+                    hooks.onLog("AutoClaw 刷新 → 复用并发刷新的结果")
+                    return cached
+                }
+            }
+            val result = doRefresh(account, credential)
+            if (result != null) refreshResults[account.uid] = result
+            return result
+        }
+    }
+
+    /** 实际发刷新请求（调用方已持单飞锁）。 */
+    private fun doRefresh(account: ProviderAccount, credential: AutoClawCredential): ProviderAccount? {
 
         val body = JsonObject().apply {
             addProperty("refresh_token", credential.refreshToken)
@@ -184,16 +282,38 @@ internal class AutoClawProvider(
             addProperty("source_id", AutoClawConstants.SOURCE_ID)
         }.toString()
 
-        val (status, text) = httpPost("${AutoClawConstants.USER_API}${AutoClawConstants.PATH_REFRESH}", body)
+        // ★ 必须带 authorization：漏了上游回 `400000 User not logged in`，
+        //   看起来像 refresh_token 失效，实际是没带 token（2026-11-11 修复）。
+        var (status, text) = httpPost(
+            "${AutoClawConstants.USER_API}${AutoClawConstants.PATH_REFRESH}",
+            body,
+            AutoClawConstants.userApiHeaders(credential.accessToken),
+        )
         if (status !in 200..299) {
             hooks.onLog("AutoClaw 刷新 → HTTP $status ${text.take(200)}")
             return null
         }
 
-        val root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull() ?: return null
-        val code = root.get("code")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+        var root = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull() ?: return null
+        var code = root.get("code")?.takeIf { it.isJsonPrimitive }?.asInt ?: 0
+        // 400002 = 刷新签名校验失败：参考实现会降级打 agent-refresh 再试一次
+        if (code == 400002) {
+            hooks.onLog("AutoClaw refresh 签名失败（400002），降级打 agent-refresh")
+            val (s2, t2) = httpPost(
+                "${AutoClawConstants.USER_API}${AutoClawConstants.PATH_REFRESH_LEGACY}",
+                body,
+                AutoClawConstants.userApiHeaders(credential.accessToken),
+            )
+            if (s2 in 200..299) {
+                status = s2
+                text = t2
+                root = runCatching { JsonParser.parseString(t2).asJsonObject }.getOrNull() ?: root
+                code = root.get("code")?.takeIf { it.isJsonPrimitive }?.asInt ?: code
+            }
+        }
         if (code != 0) {
-            hooks.onLog("AutoClaw 刷新失败 code=$code ${root.str("msg").take(120)}")
+            // 原样打出来：400000 既可能是 refresh_token 真失效，也可能是请求没带/带错 token
+            hooks.onLog("AutoClaw 刷新失败 code=$code msg=${root.str("msg").take(80)} | 原文=${text.take(200)}")
             return null
         }
         val data = root.obj("data") ?: root

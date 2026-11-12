@@ -75,6 +75,9 @@ internal object AutoClawConstants {
     // ------------------------------------------------------------------ 路径
     const val PATH_OAUTH_URL = "/userapi/overseasv1/oauth-url"
     const val PATH_REFRESH = "/userapi/v1/refresh"
+
+    /** 旧刷新端点：`refresh` 返回 400002（签名校验失败）时降级重试。 */
+    const val PATH_REFRESH_LEGACY = "/userapi/v1/agent-refresh"
     const val PATH_TASK_COMPLETE = "$USER_API/autoclaw-proxy/proxy/autoclaw-task-complete"
     const val PATH_NEWBIE_TOKEN = "$USER_API/autoclaw-proxy/proxy/autoclaw-newbie-guide/token"
     const val PATH_PROMOTION_REWARD = "$USER_API/autoclaw-proxy/proxy/autoclaw-promotion-reward"
@@ -111,6 +114,26 @@ internal object AutoClawConstants {
             "X-Lang" to "en",
             "X-Client-Type" to "pc",
         )
+
+    /**
+     * 带凭证的 userapi 请求头。
+     *
+     * ★ 必须带 authorization：刷新、余额、签到、任务列表这些 userapi 接口都是
+     *   Bearer 鉴权的，漏了会返回 `400000 User not logged in`（看起来像 refresh_token
+     *   失效，实际是根本没带 token —— 2026-11-11 踩过这个坑）。
+     *
+     * 剥一次 `Bearer ` 再拼：登录拿到的 access_token 本身可能已带前缀，
+     * 直接拼会得到 `Bearer Bearer eyJ…`，上游按空格切分出非法 JWT → 恒定 401。
+     */
+    fun userApiHeaders(
+        accessToken: String,
+        nowSeconds: Long = System.currentTimeMillis() / 1000,
+    ): MutableMap<String, String> {
+        val headers = userApiHeaders(nowSeconds)
+        val raw = accessToken.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        if (raw.isNotEmpty()) headers["authorization"] = "Bearer $raw"
+        return headers
+    }
 
     /**
      * 推理请求头。

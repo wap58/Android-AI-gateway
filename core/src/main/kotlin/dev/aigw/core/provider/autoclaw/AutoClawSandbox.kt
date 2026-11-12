@@ -215,7 +215,35 @@ internal class AutoClawSandbox(
 
         val input = runCatching { conn.inputStream }.getOrNull()
             ?: return Triple(status, null, "上游未返回内容")
-        return Triple(status, input, "")
+
+        // ★ 上游 token 过期时仍回 HTTP 200，body 却是 {"code":410000,...} 这种错误 JSON。
+        //   不识别它就会把错误当流数据转发，客户端只看到「上游流式响应没有任何数据」。
+        //   这里先窥探开头一小段：以 {"code": 但不是 code:0 开头 → 当失败返回。
+        val probe = java.io.ByteArrayOutputStream()
+        val head = input.buffered()
+        runCatching {
+            var read = 0
+            while (read < 256) {
+                val b = head.read()
+                if (b < 0) break
+                probe.write(b)
+                read++
+                // 收到 {} 闭合就够判断了
+                if (b == '}'.code) break
+            }
+        }
+        val headText = probe.toString(Charsets.UTF_8.name())
+        if (headText.trimStart().startsWith("{\"code\"") || headText.contains("\"code\":410000")) {
+            val code = Regex(""""code"\s*:\s*(\d+)""").find(headText)?.groupValues?.get(1).orEmpty()
+            if (code.isNotEmpty() && code != "0") {
+                runCatching { conn.disconnect() }
+                hooks("AutoClaw 沙箱对话 HTTP $status 但返回错误 JSON：${headText.take(200)}")
+                return Triple(if (code == "410000") 401 else 500, null, headText)
+            }
+        }
+        // 把窥探到的字节拼回流的开头
+        val merged = java.io.SequenceInputStream(java.io.ByteArrayInputStream(probe.toByteArray()), head)
+        return Triple(status, merged, "")
     }
 
     // ------------------------------------------------------------------ 积分
