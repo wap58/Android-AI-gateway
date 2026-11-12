@@ -63,16 +63,16 @@ jobs:
         run: |
           # 基版本取自 build.gradle（如 1.0.0），CI 包版本名带 -ci{run} 后缀：
           #   1.0.0 → 1.0.0-ci153
-          # 为什么用「ci + 数字」而不是纯后缀或第四段数字：
+                    # 为什么用「ci + 递增数字」而不是 run_number 或第四段数字：
           #   1) 正式版保持三段（1.0.0），显示干净；
-          #   1.0.0 → 1.0.0-ci1、1.0.0-ci2 …（.ci-build-number 里的计数器自增）
-          # 为什么用「ci + 递增数字」而不是 run_number 或第四段数字：
-          #   1) 正式版保持三段（1.0.0），显示干净；
-          #   2) 两个 CI 包之间靠计数器区分（ci1 < ci2 < ci3）；
+          #   2) 两个 CI 包之间靠计数器区分（ci.1 < ci.2 < ci.3）；
           #   3) isNewer() 数字段相同时按「带字母 = 测试版」判定，
           #      从 CI 版切回公开版能检测到正式版更新。
           # versionCode 单独递增（见下），覆盖安装靠它，不靠 versionName。
           BASE=$(grep -E '^\s*versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"(.*)".*/\1/')
+          # ★ 先剥掉已有的 -ci.N：本地构建 CI 包时 versionName 会带着旧后缀，
+          #   不剥就会拼出 1.0.0-ci.6-ci.4 这种双后缀。
+          BASE=$(echo "$BASE" | sed -E 's/-ci\.[0-9]+$//')
           # 计数器：没有就从 1 起；每次构建 +1 并写回，随提交进入仓库
           CI_NO=$(cat .ci-build-number 2>/dev/null || echo 0)
           CI_NO=$((CI_NO + 1))

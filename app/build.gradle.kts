@@ -44,7 +44,7 @@ android {
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
         versionCode = 159
-        versionName = "1.0.0-ci.6"
+        versionName = "1.0.0"
     }
 
     buildFeatures {
