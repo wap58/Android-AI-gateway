@@ -43,8 +43,8 @@ android {
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
-        versionCode = 159
-        versionName = "1.0.0"
+        versionCode = 200
+        versionName = "1.1.0"
     }
 
     buildFeatures {
@@ -118,6 +118,9 @@ dependencies {
 
     // :core 用 implementation 引 gson，不传递；app 里要直接构造 JsonObject（如动作 payload）
     implementation("com.google.code.gson:gson:2.11.0")
+
+    // 液态玻璃悬浮底栏的背景采样/模糊（上游同款）
+    implementation("dev.chrisbanes.haze:haze:1.6.10")
 
     implementation(platform("androidx.compose:compose-bom:2024.12.01"))
     implementation("androidx.core:core-ktx:1.15.0")

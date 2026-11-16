@@ -104,6 +104,10 @@ class GatewayHttpServer(
         addHeader("Access-Control-Allow-Origin", "*")
         addHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         addHeader("Access-Control-Allow-Headers", "*")
+        // 非流式响应一律不复用连接：NanoHTTPD 的 keep-alive 是「处理完再阻塞读下一个请求」，
+        // 空闲连接会一直占着工作线程直到 socket 读超时，并发一多线程就被这些空转连接吃光，
+        // 真正要转发的请求只能排队。OpenAI 客户端每次请求都新建连接，放弃复用代价极小。
+        if (this !is SseResponse) closeConnection(true)
     }
 
     // ------------------------------------------------------------------ 端点
@@ -115,6 +119,19 @@ class GatewayHttpServer(
     }
 
     /** 聚合额度与配额查询端点：包含各供应商剩余额度及 Antigravity 的四个进度条指标。 */
+    private fun dbgLogs(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!isLocalhost(session)) return json(403, "{}")
+        val filter = session.parms["grep"].orEmpty()
+        val lines = engine.requestLog.lines()
+            .asReversed()
+            .filter { filter.isEmpty() || it.text.contains(filter, ignoreCase = true) }
+            .take(session.parms["take"]?.toIntOrNull() ?: 200)
+            .joinToString("\n") { it.text }
+        return NanoHTTPD.newFixedLengthResponse(
+            SimpleStatus(200, "OK"), "text/plain; charset=utf-8", lines,
+        )
+    }
+
     private fun credits(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
         if (!authorized(session)) return unauthorized(session)
         val refresh = session.parms["refresh"] == "true"
@@ -151,6 +168,8 @@ class GatewayHttpServer(
                     aObj.addProperty("detail", current.detail)
                     aObj.addProperty("enabled", current.enabled)
                     aObj.addProperty("disabled", current.disabled)
+                    // 禁用原因也输出：调试掉线时这是唯一能看到上游原话的地方
+                    if (current.reason.isNotEmpty()) aObj.addProperty("reason", current.reason)
 
                     if (current.creditsKnown) {
                         totalCredits += current.credits
@@ -237,7 +256,25 @@ class GatewayHttpServer(
         val streaming = peek.get("stream")?.asBoolean ?: false
         val requestedModel = peek.get("model")?.asString.orEmpty()
 
-        val primaryRoute = engine.resolveRoute(requestedModel)
+        // 请求改写：别名换模型、system 追加、剥离 think 标签。
+        // 必须在 resolveRoute 之前——别名改了 model 才能解析到正确供应商。
+        val rewritten = run {
+            val chain = engine.middleware()
+            if (chain.isEmpty) return@run null
+            val ctx = MiddlewareContext(
+                requestedModel = requestedModel,
+                providerId = "",
+                upstreamModel = "",
+            )
+            runCatching { chain.apply(ctx, peek) }.getOrNull()
+        }
+        val effectiveBody = rewritten?.toString() ?: body
+        val effectiveModel = rewritten?.get("model")?.asString?.takeIf { it.isNotBlank() } ?: requestedModel
+        if (rewritten != null && effectiveBody != body) {
+            log("请求改写生效：model=$requestedModel → $effectiveModel")
+        }
+
+        val primaryRoute = engine.resolveRoute(effectiveModel)
             ?: return errorResponse(400, "invalid_request", "缺少 model 参数")
 
         val startedAt = System.currentTimeMillis()
@@ -311,7 +348,7 @@ class GatewayHttpServer(
                 break
             }
 
-            val prepared = withModel(body, resolvedModel)
+            val prepared = withModel(effectiveBody, resolvedModel)
             val secSettings = engine.securitySettings()
             // 反审核脱敏：仅改写 system 消息内的敏感词（注入零宽空格），完全不触碰 user 输入
             val sanitized = engine.sanitizer.sanitizeOpenAiBody(prepared, resolvedModel, secSettings.sanitizeEnabled)
@@ -1156,6 +1193,8 @@ class GatewayHttpServer(
         json(status, OpenAiApi.errorBody(code, message)).apply {
             // 错误响应一律关闭连接：请求体的消费状态未知时，残留字节会污染 keep-alive 连接
             addHeader("Connection", "close")
+            // 并发满 / 限流是「稍后重试会好」，告诉客户端退避多久；否则 OpenAI 系客户端不会自动重试
+            if (status == 429) addHeader("Retry-After", "2")
         }
 
     private fun statusText(status: Int): String = when (status) {
@@ -1164,6 +1203,7 @@ class GatewayHttpServer(
         401 -> "Unauthorized"
         404 -> "Not Found"
         413 -> "Payload Too Large"
+        429 -> "Too Many Requests"
         500 -> "Internal Server Error"
         503 -> "Service Unavailable"
         else -> "Status"

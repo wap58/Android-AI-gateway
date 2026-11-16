@@ -368,24 +368,23 @@ class RaccoonProvider(
         var nickname = jwtClaim(accessToken, "name")
         var pro = false
         var orgCode = ""
-        var userId = ""
         val userInfo = runCatching { fetchUserInfo(accessToken) }.getOrNull()
         if (userInfo != null) {
             nickname = userInfo.firstString("name", "nickname", "nick_name", "username").ifEmpty { nickname }
             pro = userInfo.boolOrNull("pro") == true
             orgCode = firstOrgCode(userInfo)
-            userId = userInfo.firstString("userId", "user_id", "uid", "sub")
         }
         // ★ 不能用 JWT 的 iss 当用户 id：iss 是签发方，同站点所有用户同一个值。
         //   拿它做账号池主键会让后登录的账号覆盖前一个，表现为「只能登一个号」。
         //
-        // 取值顺序（稳定性递减）：
-        //   1. user_info 的用户字段（上面已取，非空就不再覆盖）
-        //   2. JWT 用户声明 user_id/userId/uid/sub
+        // 取值顺序（稳定性递减，对照 Buddy2api 的 providers/xiaohuanxiong/store.py）：
+        //   1. JWT 的用户声明——每个账号都不同且稳定，首选
+        //   2. user_info 里的 id 字段（仅当 JWT 没给）——上游该接口的 id 语义不稳定，不首选
         //   3. 由 **refresh_token** 派生——绝不能用 access_token：
         //      后者每次登录都轮换，派生的 uid 每次都变，等于每登一次多一个账号。
-        if (userId.isEmpty()) {
-            userId = jwtClaim(accessToken, "user_id", "userId", "uid", "sub")
+        var userId = jwtClaim(accessToken, "user_id", "userId", "uid", "sub")
+        if (userId.isEmpty() && userInfo != null) {
+            userId = userInfo.firstString("userId", "user_id", "uid", "id", "sub")
         }
         if (userId.isEmpty()) {
             // refresh_token 为空的老账号退回 access_token（有轮换风险，但比没有强）
@@ -773,8 +772,11 @@ class RaccoonProvider(
             addProperty("nickname", credential.nickname)
             if (credential.orgCode.isNotEmpty()) addProperty("orgCode", credential.orgCode)
         }.toString()
+        // uid 兜底必须用 **refresh_token** 的哈希：它只在重新授权时轮换，同一账号多次登录保持稳定；
+        // access_token 每次登录都换，拿它做哈希会让同一账号反复变成新条目（看起来像「只能登一个号」）
         val uid = existingUid.ifEmpty { credential.userId }.ifEmpty {
-            "raccoon-" + credential.accessToken.hashCode().toUInt().toString(16)
+            val material = credential.refreshToken.ifEmpty { credential.accessToken }
+            "raccoon-" + material.hashCode().toUInt().toString(16)
         }
         return ProviderAccount(id, uid, credential.nickname, secret)
     }

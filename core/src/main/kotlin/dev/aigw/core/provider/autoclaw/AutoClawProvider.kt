@@ -212,18 +212,39 @@ internal class AutoClawProvider(
      * 因为刷新的代价远小于拿过期 token 去撞 401 后禁用账号）。
      */
     private fun isTokenExpiring(accessToken: String, skewSeconds: Long): Boolean {
-        val raw = accessToken.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        val raw = AutoClawConstants.stripBearer(accessToken)
         val parts = raw.split('.')
-        if (parts.size < 2) return true
+        // ★ 解析不出就**不刷新**（与参考实现一致：`None => false`）。
+        //   之前返回 true 的后果：token 若不是标准 JWT，每个请求都触发刷新，
+        //   高频刷新把 refresh_token 轮换掉 → 一天后集体掉线。
+        if (parts.size < 2) return false
         val exp = runCatching {
-            val payload = java.util.Base64.getUrlDecoder().decode(parts[1])
+            var b64 = parts[1].replace('-', '+').replace('_', '/')
+            val remainder = b64.length % 4
+            if (remainder != 0) b64 += "=".repeat(4 - remainder)
+            val payload = java.util.Base64.getDecoder().decode(b64)
             val obj = JsonParser.parseString(String(payload, Charsets.UTF_8)).asJsonObject
             obj.get("exp")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
         }.getOrDefault(0L)
-        if (exp <= 0L) return true
+        if (exp <= 0L) return false
         val now = System.currentTimeMillis() / 1000
         val skew = if (skewSeconds > 0) skewSeconds else 300L
         return now >= exp - skew
+    }
+
+    /** 诊断：返回 token 的 exp（秒），解析不出返回 -1。 */
+    private fun tokenExp(accessToken: String): Long {
+        val raw = AutoClawConstants.stripBearer(accessToken)
+        val parts = raw.split('.')
+        if (parts.size < 2) return -1L
+        return runCatching {
+            var b64 = parts[1].replace('-', '+').replace('_', '/')
+            val remainder = b64.length % 4
+            if (remainder != 0) b64 += "=".repeat(4 - remainder)
+            val payload = java.util.Base64.getDecoder().decode(b64)
+            val obj = JsonParser.parseString(String(payload, Charsets.UTF_8)).asJsonObject
+            obj.get("exp")?.takeIf { it.isJsonPrimitive }?.asLong ?: -1L
+        }.getOrDefault(-1L)
     }
 
     // ------------------------------------------------------------------ 刷新
@@ -244,6 +265,22 @@ internal class AutoClawProvider(
     /** 最近一次刷新结果缓存：并发等待者直接复用它，不再发请求。 */
     private val refreshResults = java.util.concurrent.ConcurrentHashMap<String, ProviderAccount>()
 
+    /**
+     * 定期无条件刷新一次（保鲜任务专用）。
+     *
+     * ★ 为什么必须无条件：AutoClaw 服务端会**轮换 refresh_token**，长期不用的
+     *   那份会被判定失效，此后刷新只会返回 `400000 User not logged in`，
+     *   只能重新登录。官方桌面端每小时无条件刷一次（`reason: hourly_forced`）
+     *   正是为了把 refresh_token「温着」。这就是「一天掉一次线」的根因。
+     */
+    override fun keepAliveCredential(account: ProviderAccount): ProviderAccount? {
+        val credential = AutoClawCredential.parse(account.secret) ?: return null
+        if (credential.refreshToken.isEmpty()) return null
+        // 与 refreshAccount 共用同一把单飞锁，避免和请求路径的刷新撞车
+        val lock = refreshLocks.computeIfAbsent(account.uid) { Any() }
+        return synchronized(lock) { doRefresh(account, credential) }
+    }
+
     override fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? {
         val credential = AutoClawCredential.parse(account.secret) ?: return null
         if (credential.refreshToken.isEmpty()) {
@@ -251,7 +288,15 @@ internal class AutoClawProvider(
             return null
         }
         // 没临期就别刷：每次对话都刷会多一次上游往返，还会因高频刷新触发 token 轮换
-        if (!isTokenExpiring(credential.accessToken, skewSeconds)) {
+        // 判断依据优先用凭证里存的 expiresAt（登录/刷新时写入），
+        // 它解析不出再退回解析 JWT —— 避免每次都做 Base64 解码。
+        val expiring = if (credential.expiresAt > 0L) {
+            System.currentTimeMillis() / 1000 >= credential.expiresAt - (if (skewSeconds > 0) skewSeconds else 300L)
+        } else {
+            isTokenExpiring(credential.accessToken, skewSeconds)
+        }
+        hooks.onLog("AutoClaw 刷新判断 expiring=$expiring skew=$skewSeconds exp=${tokenExp(credential.accessToken)}")
+        if (!expiring) {
             return null
         }
 
@@ -277,20 +322,42 @@ internal class AutoClawProvider(
     private fun doRefresh(account: ProviderAccount, credential: AutoClawCredential): ProviderAccount? {
 
         val body = JsonObject().apply {
-            addProperty("refresh_token", credential.refreshToken)
-            addProperty("device_id", deviceId())
+            // ★ 必须剥掉可能的 `Bearer ` 前缀：登录响应的 refresh_token 有时自带前缀，
+            //   原样发给上游会得到 `400000 用户未登录`（上游把 "Bearer eyJ..." 整体当 token 校验）。
+            addProperty(
+                "refresh_token",
+                AutoClawConstants.stripBearer(credential.refreshToken),
+            )
+            // ★ device_id 的取舍（对齐参考实现 refresh.rs:311-323）：
+            //   凭证里已经存了就用它，没有才回落到 JWT / 本地派生。
+            //   登录时上游可能改签自己的 device_id 进 JWT，来回切换会让上游
+            //   认为「设备变了」而拒绝刷新（400000）。
+            val fromJwt = deviceIdFromToken(credential.accessToken)
+            val dev = credential.deviceId.ifEmpty { fromJwt.ifEmpty { deviceId() } }
+            addProperty("device_id", dev)
             addProperty("source_id", AutoClawConstants.SOURCE_ID)
+            hooks.onLog(
+                "AutoClaw 刷新请求 device=${dev.take(12)} stored=${credential.deviceId.take(12)} " +
+                    "jwtDevice=${fromJwt.take(12)} local=${deviceId().take(12)} " +
+                    "rt=${credential.refreshToken.take(10)}",
+            )
         }.toString()
 
         // ★ 必须带 authorization：漏了上游回 `400000 User not logged in`，
         //   看起来像 refresh_token 失效，实际是没带 token（2026-11-11 修复）。
+        // ★ 必须按账号地区选域名：国内号只有 acceleration 域能刷新。
+        //   之前写死 AutoClawConstants.USER_API（国际版 autoglm-api.autoglm.ai），
+        //   国内账号刷新时上游根本认不出这个 refresh_token，恒定回
+        //   `400000 用户未登录`——看起来像凭证失效，实际是打错了域。
+        //   这是「24 小时必掉线」的真正根因（2026-11-16）。
+        val userApi = AutoClawConstants.userApiHost(credential.realm)
         var (status, text) = httpPost(
-            "${AutoClawConstants.USER_API}${AutoClawConstants.PATH_REFRESH}",
+            "$userApi${AutoClawConstants.PATH_REFRESH}",
             body,
             AutoClawConstants.userApiHeaders(credential.accessToken),
         )
         if (status !in 200..299) {
-            hooks.onLog("AutoClaw 刷新 → HTTP $status ${text.take(200)}")
+            hooks.onLog("AutoClaw 刷新 → HTTP $status ${text.take(200)}（域=$userApi）")
             return null
         }
 
@@ -300,7 +367,7 @@ internal class AutoClawProvider(
         if (code == 400002) {
             hooks.onLog("AutoClaw refresh 签名失败（400002），降级打 agent-refresh")
             val (s2, t2) = httpPost(
-                "${AutoClawConstants.USER_API}${AutoClawConstants.PATH_REFRESH_LEGACY}",
+                "$userApi${AutoClawConstants.PATH_REFRESH_LEGACY}",
                 body,
                 AutoClawConstants.userApiHeaders(credential.accessToken),
             )
@@ -318,19 +385,51 @@ internal class AutoClawProvider(
         }
         val data = root.obj("data") ?: root
         // 字段名以实测为准；这里同时容忍驼峰/下划线两种写法，取不到就不动原值
+        // ★ 剥掉可能的 Bearer 前缀再存：上游给的 access_token 自带前缀时，
+        //   后面拼接 authorization 会变成 `Bearer Bearer eyJ…` → 非法 JWT → 恒定 401。
         val newToken = data.str("access_token").ifEmpty { data.str("accessToken") }
+            .let { AutoClawConstants.stripBearer(it) }
         if (newToken.isEmpty()) {
             hooks.onLog("AutoClaw 刷新拿不到 access_token，响应字段=${data.keySet().joinToString(",")}")
             return null
         }
         val newRefresh = data.str("refresh_token").ifEmpty { data.str("refreshToken") }
+            .let { AutoClawConstants.stripBearer(it) }
             .ifEmpty { credential.refreshToken }
 
-        hooks.onLog("AutoClaw 刷新成功 token=${newToken.take(12)}…")
+        // ★ 上游对已失效的 refresh_token 会「宽容地返回旧值」而不报错。
+        //   此时 token/refresh 都没变，若旧 token 已过期，就是彻底失效了 ——
+        //   必须明确失败，否则会静默失效（对齐上游 3.4.1 的修复）。
+        if (newToken == credential.accessToken && newRefresh == credential.refreshToken) {
+            // 判断旧 token 还有没有效：优先看存的 expiresAt，没有再解析 JWT
+            val expNow = tokenExp(credential.accessToken)
+            val effectiveExp = when {
+                credential.expiresAt > 0L -> credential.expiresAt
+                expNow > 0L -> expNow
+                else -> 0L
+            }
+            val stillValid = effectiveExp <= 0L || effectiveExp > System.currentTimeMillis() / 1000
+            if (!stillValid) {
+                hooks.onLog("AutoClaw 刷新未返回新 token（上游按旧值返回）且旧 token 已过期，需重新登录")
+                return null
+            }
+            hooks.onLog("AutoClaw 刷新返回旧 token（服务端未轮换，但仍在有效期内）")
+            // ★ 返回原账号而不是 null：调用方据此知道「凭证没问题」。
+            //   返回 null 会被上层当成刷新失败（保鲜任务会记「未续期」）。
+            return account
+        }
+
+        // 新 token 的到期时间：优先 JWT 的 exp，解析不出就沿用旧值
+        val newExp = tokenExp(newToken).let { if (it > 0L) it else credential.expiresAt }
+
+        hooks.onLog("AutoClaw 刷新成功 token=${newToken.take(12)}… exp=$newExp")
         val updated = credential.copy(
             accessToken = newToken,
             refreshToken = newRefresh,
+            // 新 token 的 sub/uid 可能为空，沿用旧值（参考实现同样保留）
+            userId = credential.userId,
             userName = credential.userName,
+            expiresAt = newExp,
         )
         return account.copy(secret = updated.toSecret())
     }
@@ -802,6 +901,27 @@ internal class AutoClawProvider(
     }
 
     /** 设备标识：固定派生即可，服务端只用于风控关联，不做强校验。 */
+    /**
+     * 从 access token 的 JWT 里取 `device_id`（上游在登录时签进去的那个）。
+     *
+     * ★ 刷新接口要带登录时的同一个 device_id，否则上游可能判定
+     *   `400000 User not logged in`（2026-11-14 排查方向）。
+     * 取不到时回落到本地派生值。
+     */
+    private fun deviceIdFromToken(accessToken: String): String {
+        val raw = AutoClawConstants.stripBearer(accessToken)
+        val parts = raw.split('.')
+        if (parts.size < 2) return ""
+        return runCatching {
+            var b64 = parts[1].replace('-', '+').replace('_', '/')
+            val remainder = b64.length % 4
+            if (remainder != 0) b64 += "=".repeat(4 - remainder)
+            val payload = java.util.Base64.getDecoder().decode(b64)
+            val obj = JsonParser.parseString(String(payload, Charsets.UTF_8)).asJsonObject
+            obj.get("device_id")?.takeIf { it.isJsonPrimitive }?.asString.orEmpty()
+        }.getOrDefault("")
+    }
+
     private fun deviceId(): String {
         val digest = java.security.MessageDigest.getInstance("SHA-1")
             .digest("autoclaw-device".toByteArray())

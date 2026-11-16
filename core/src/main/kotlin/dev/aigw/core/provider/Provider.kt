@@ -122,6 +122,17 @@ interface Provider {
     /** 预刷新凭证；返回新账号表示 token 发生轮换（调用方需原子写回）。 */
     fun refreshAccount(account: ProviderAccount, skewSeconds: Long): ProviderAccount? = null
 
+    /**
+     * 定期「无条件」续期一次凭证（保鲜任务专用）。
+     *
+     * 与 [refreshAccount] 的区别：不管 token 是否临期都去刷一次。
+     * 有些上游（如 AutoClaw）会轮换 refresh_token，长期不用会被判失效，
+     * 只能靠定期刷新把它「温着」—— 这是防「一天掉一次线」的唯一手段。
+     *
+     * 默认返回 null（该 provider 不需要/不支持）。
+     */
+    fun keepAliveCredential(account: ProviderAccount): ProviderAccount? = null
+
     /** 统一错误分类，供调度层决定重试与换号策略。 */
     fun classify(status: Int, body: String): UpstreamError
 

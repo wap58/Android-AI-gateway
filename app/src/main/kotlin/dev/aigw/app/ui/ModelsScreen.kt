@@ -80,7 +80,11 @@ fun ModelsScreen(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     // 按 routePrefix 分组：区域型供应商（如 WorkBuddy 国内与国外）各成一个分组
-    val grouped = remember(state.models) { state.models.groupBy { it.routePrefix } }
+    // fullId 必须全局唯一：LazyColumn 用它当 key，重复会直接抛
+    // IllegalArgumentException 崩掉整个页面（供应商返回重名模型时就会发生）。
+    val grouped = remember(state.models) {
+        state.models.distinctBy { it.fullId }.groupBy { it.routePrefix }
+    }
     val exposure = state.modelExposure
     // 折叠状态：记「被展开」的分组（默认全折叠，避免一进页面就是几百行模型）。
     //
@@ -223,7 +227,13 @@ fun ModelsScreen(
         LazyColumn(
             state = listState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+            // 悬浮底栏是层叠在内容之上的：不开这个内边距，最后一项会被玻璃胶囊盖住。
+            // LocalBottomContentPadding 由 MainActivity 按开关注入（关掉时为 0.dp）。
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                bottom = 20.dp + LocalBottomContentPadding.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (grouped.isEmpty()) {

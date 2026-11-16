@@ -5,6 +5,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +33,8 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
     val clipboard = LocalClipboardManager.current
     var port by remember(settings.port) { mutableStateOf(settings.port.toString()) }
     var apiKey by remember(settings.apiKey) { mutableStateOf(settings.apiKey) }
+    var skewText by remember(settings.refreshSkewSeconds) { mutableStateOf(settings.refreshSkewSeconds.toString()) }
+    var rotateText by remember(settings.maxRotate) { mutableStateOf(settings.maxRotate.toString()) }
     var bodyLimit by remember(settings.maxRequestBodyMb) {
         mutableStateOf(settings.maxRequestBodyMb.toString())
     }
@@ -172,6 +176,69 @@ fun ApiSettingsScreen(state: AppUiState, viewModel: AppViewModel, onBack: () -> 
         }
 
         SectionCard(enterIndex = 5) {
+            SectionLabel("网关行为")
+
+            // 只看可用模型：隐藏上游的非对话内部条目（嵌入、审核类模型）
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("只看可用模型", style = MaterialTheme.typography.titleSmall)
+                    Text(
+                        "隐藏上游的非对话内部条目（嵌入、审核类模型），对 /v1/models 与模型页都生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = settings.onlyUsableModels,
+                    onCheckedChange = { viewModel.updateSettings(settings.copy(onlyUsableModels = it)) },
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // 预刷新窗口与换号次数：两个数字项并排
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = skewText,
+                        onValueChange = { input ->
+                            skewText = input.filter { it.isDigit() }.take(4)
+                            skewText.toLongOrNull()?.let { v ->
+                                if (v in 0..3600) {
+                                    viewModel.updateSettings(settings.copy(refreshSkewSeconds = v))
+                                }
+                            }
+                        },
+                        label = { Text("预刷新窗口（秒）") },
+                        supportingText = { Text("token 临期多久内才刷新，上限 3600") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Column(Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = rotateText,
+                        onValueChange = { input ->
+                            rotateText = input.filter { it.isDigit() }.take(2)
+                            rotateText.toIntOrNull()?.let { v ->
+                                if (v in 1..10) {
+                                    viewModel.updateSettings(settings.copy(maxRotate = v))
+                                }
+                            }
+                        },
+                        label = { Text("最多换号次数") },
+                        supportingText = { Text("单次请求最多换几个账号，1~10") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        SectionCard(enterIndex = 6) {
             OutlineActionButton("保存") {
                 val parsed = port.toIntOrNull()
                 if (parsed == null || parsed !in 1024..65535) {

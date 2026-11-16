@@ -138,12 +138,20 @@ class AppearanceStore(private val store: KeyValueStore) {
         store.write(KEY_GOLD_END, hex)
     }
 
+    /** 悬浮底栏：导航栏改为浮在内容上的液态玻璃胶囊（默认开，与上游一致）。 */
+    fun floatingNavBar(): Boolean = store.read(KEY_FLOATING_NAV) != "0"
+
+    fun setFloatingNavBar(enabled: Boolean) {
+        store.write(KEY_FLOATING_NAV, if (enabled) "1" else "0")
+    }
+
     /** 清空全部自定义外观，恢复默认。 */
     fun reset() {
         store.delete(KEY_MODE)
         store.delete(KEY_BG)
         store.delete(KEY_GOLD_START)
         store.delete(KEY_GOLD_END)
+        store.delete(KEY_FLOATING_NAV)
     }
 
     companion object {
@@ -155,6 +163,7 @@ class AppearanceStore(private val store: KeyValueStore) {
         private const val KEY_BG = "settings/appearance.backgroundHex"
         private const val KEY_GOLD_START = "settings/appearance.goldStartHex"
         private const val KEY_GOLD_END = "settings/appearance.goldEndHex"
+        private const val KEY_FLOATING_NAV = "settings/appearance.floatingNavBar"
     }
 }
 
@@ -314,6 +323,10 @@ data class AppUiState(
     /** 代理设置。 */
     val proxy: ProxySettings = ProxySettings(),
     val dynamicColor: Boolean = false,
+    /** 悬浮底栏：导航栏浮在内容上的液态玻璃胶囊。 */
+    val floatingNavBar: Boolean = true,
+    /** 请求改写设置（别名 / system 追加 / 剥离 think 标签）。 */
+    val middleware: dev.aigw.core.gateway.MiddlewareSettings = dev.aigw.core.gateway.MiddlewareSettings(),
     /** 明暗模式。 */
     val themeMode: ThemeMode = ThemeMode.System,
     /** 页面底色覆盖；null 表示用默认底色。 */
@@ -409,6 +422,8 @@ class AppViewModel(
     private val _state = MutableStateFlow(
         AppUiState(
             dynamicColor = appearance.dynamicColor(),
+            floatingNavBar = appearance.floatingNavBar(),
+            middleware = engine.middlewareSettings(),
             autoCheckUpdate = updateStore.autoCheck(),
             updateChannel = updateStore.channel(),
             themeMode = appearance.themeMode(),
@@ -1048,6 +1063,24 @@ class AppViewModel(
     fun setThemeMode(mode: ThemeMode) {
         _state.value = _state.value.copy(themeMode = mode)
         viewModelScope.launch { withContext(Dispatchers.IO) { appearance.setThemeMode(mode) } }
+    }
+
+    /** 切换悬浮底栏（立即生效并落盘）。 */
+    fun setFloatingNavBar(enabled: Boolean) {
+        _state.value = _state.value.copy(floatingNavBar = enabled)
+        viewModelScope.launch { withContext(Dispatchers.IO) { appearance.setFloatingNavBar(enabled) } }
+    }
+
+    /** 请求改写中间件最近一次失败信息（键为中间件 id）。 */
+    fun middlewareFailures(): Map<String, String> = engine.middleware().failures()
+
+    /** 保存请求改写设置（立即重建中间件链）。 */
+    fun updateMiddleware(settings: dev.aigw.core.gateway.MiddlewareSettings) {
+        _state.value = _state.value.copy(middleware = settings)
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { engine.saveMiddlewareSettings(settings) }
+            notice(if (settings.isActive) "请求改写已生效" else "请求改写已关闭")
+        }
     }
 
     /** 设置页面底色；[hex] 为 null 表示清除覆盖（恢复默认底色）。 */
@@ -1927,6 +1960,9 @@ class AppViewModel(
     /** 当前下载尝试到第几个地址（镜像失败会自动换下一个）。 */
     private var downloadAttempt = 0
 
+    /** 测速排序后的下载地址：每次更新流程测一次，重试直接复用，避免反复探。 */
+    private var rankedDownloadUrls: List<String>? = null
+
     /**
      * 正在进行的下载轮询任务。
      *
@@ -1950,7 +1986,15 @@ class AppViewModel(
             return
         }
         downloadAttempt = 0
-        beginDownload(info)
+        rankedDownloadUrls = null
+        // 测速是网络 IO（最多 8 秒），必须在后台线程：主线程探测会卡住界面
+        viewModelScope.launch {
+            notice("正在选择最快的下载线路…")
+            withContext(Dispatchers.IO) {
+                rankedDownloadUrls = dev.aigw.app.update.ApkUpdater.rankedCandidates(info.apkUrl)
+            }
+            beginDownload(info)
+        }
     }
 
     /**
@@ -1960,7 +2004,9 @@ class AppViewModel(
      * 自动换下一个（GitHub 直链留作最后兜底），避免「一次失败就让用户手动去点浏览器」。
      */
     private fun beginDownload(info: UpdateInfo) {
-        val candidates = dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
+        // 候选地址由 startInAppUpdate 测速后写入（重试时复用，不再重复探测）
+        val candidates = rankedDownloadUrls
+            ?: dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
         if (downloadAttempt >= candidates.size) {
             notice("所有下载地址都失败了，已打开下载页")
             openReleasePage(info.url)
@@ -2008,7 +2054,8 @@ class AppViewModel(
                     is dev.aigw.app.update.ApkUpdater.DownloadState.Failed -> {
                         // 镜像挂了就换下一个地址再试，别让用户看到一次失败就结束
                         downloadAttempt++
-                        val next = dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
+                        val next = rankedDownloadUrls
+                            ?: dev.aigw.app.update.ApkUpdater.downloadCandidates(info.apkUrl)
                         if (downloadAttempt < next.size) {
                             notice("该地址下载失败（${st.message}），正在换下一个…")
                             beginDownload(info)

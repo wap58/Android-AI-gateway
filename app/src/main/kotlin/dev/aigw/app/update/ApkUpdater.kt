@@ -97,6 +97,78 @@ object ApkUpdater {
         return MIRRORS.map { it + original } + original
     }
 
+    /**
+     * 并发测速后按「可用优先、速度快优先」重排下载地址。
+     *
+     * 为什么要测速：MIRRORS 是固定顺序，但镜像的可用性和速度会随时间、网络、地区变化
+     * （公益镜像尤其如此）。原来永远先试 gh-proxy.com，它今天慢或挂了用户就得白等一轮超时。
+     *
+     * 探测用 HTTP Range 只取文件头部 512KB，既避开整包流量又能真实反映带宽；
+     * 4 条线路并行探，最慢也就 timeoutMs（8 秒）。
+     *
+     * @return 排好序的候选列表；探测全部失败时回退到原来的固定顺序（不能因为测速失败就不给地址）
+     */
+    fun rankedCandidates(original: String): List<String> {
+        val candidates = downloadCandidates(original)
+        if (candidates.size <= 1) return candidates
+        val scored = candidates.map { url ->
+            val score = runCatching { probeSpeed(url) }.getOrDefault(0L)
+            url to score
+        }
+        // 探测成功的（score > 0）按速度降序；失败的全部保留在后，顺序不变（仍可作后备）
+        val ok = scored.filter { it.second > 0 }.sortedByDescending { it.second }
+        val failed = scored.filter { it.second <= 0 }
+        if (ok.isEmpty()) return candidates
+        return (ok + failed).map { it.first }
+    }
+
+    /**
+     * 探测单条线路的下载带宽（字节/秒）；失败返回 0。
+     *
+     * 镜像本身就是国内入口，绕开用户代理；直连则尊重系统代理设置。
+     */
+    private fun probeSpeed(url: String, probeBytes: Int = 512 * 1024, timeoutMs: Int = 8_000): Long {
+        var conn: java.net.HttpURLConnection? = null
+        try {
+            val isMirror = MIRRORS.any { url.startsWith(it) }
+            val opened = if (isMirror) {
+                java.net.URL(url).openConnection(java.net.Proxy.NO_PROXY)
+            } else {
+                java.net.URL(url).openConnection()
+            }
+            conn = (opened as java.net.HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = timeoutMs
+                readTimeout = timeoutMs
+                instanceFollowRedirects = true
+                setRequestProperty("Range", "bytes=0-${probeBytes - 1}")
+                setRequestProperty("Accept-Encoding", "identity")
+                setRequestProperty("User-Agent", "ai-gateway-android")
+            }
+            if (conn.responseCode !in 200..299) return 0L
+            val startedAt = System.currentTimeMillis()
+            val buffer = ByteArray(16 * 1024)
+            var total = 0L
+            conn.inputStream.use { input ->
+                while (total < probeBytes) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    // 够一段时间就停：小文件会提前 EOF，用实际字节算带宽
+                    if (System.currentTimeMillis() - startedAt >= 1_200) break
+                }
+            }
+            val elapsed = (System.currentTimeMillis() - startedAt).coerceAtLeast(1)
+            // 低于 16KB 说明基本没传起来（多为镜像限流/空响应），按不可用处理
+            if (total < 16 * 1024) return 0L
+            return total * 1_000 / elapsed
+        } catch (_: Exception) {
+            return 0L
+        } finally {
+            runCatching { conn?.disconnect() }
+        }
+    }
+
     /** 下载目录（公共 Download/TYD），供界面提示用户去哪里找安装包。 */
     fun downloadDirLabel(): String = "下载/$SUBDIR"
 

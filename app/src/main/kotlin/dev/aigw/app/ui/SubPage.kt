@@ -39,6 +39,9 @@ sealed interface SubPage {
     /** 并发与容错：并发闸门、重试退避与熔断器。 */
     data object Resilience : SubPage
 
+    /** 请求改写：模型别名、system 提示词追加与思考标签清理。 */
+    data object RequestRewrite : SubPage
+
     /** 外观主题：明暗模式、配色方案与金色文字。 */
     data object AppearanceTheme : SubPage
 

@@ -124,6 +124,19 @@ class ConcurrencyGate(
     fun inFlightGlobal(): Int = globalInFlight.get()
     fun inFlightOf(accountKey: String): Int = accountInFlight[accountKey]?.get() ?: 0
 
+    /**
+     * 该账号是否还有并发余量（不取许可，只探测）。
+     *
+     * 选号时据此避开已满载的账号：闸门按账号串行，若选号不感知在途，
+     * 多个请求会全挤在优先级最高的那一个上排队，其它账号完全闲着。
+     */
+    fun hasCapacity(accountKey: String): Boolean {
+        val cfg = config()
+        if (cfg.maxGlobal > 0 && inFlightGlobal() >= cfg.maxGlobal) return false
+        if (cfg.maxPerAccount > 0 && inFlightOf(accountKey) >= cfg.maxPerAccount) return false
+        return true
+    }
+
     /** 一次取得并发许可的句柄；release 释放且幂等。 */
     class Handle internal constructor(
         private val gate: ConcurrencyGate?,

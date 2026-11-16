@@ -23,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.aigw.app.ui.providers.ProviderUiActions
 import dev.aigw.core.pool.AccountStatus
@@ -38,9 +39,12 @@ fun AccountTitleColumn(
     Column(modifier = modifier) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = account.nickname.ifEmpty { account.uid },
+                // 昵称为空时回退到 uid；uid 若是长 UUID/哈希，只显示首尾，否则一行放不下也认不出
+                text = account.nickname.ifEmpty { shortAccountId(account.uid) },
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
             // 优先级 > 0 说明用户手动排过序，标出来才看得出「为什么先用这个号」
             if (account.priority > 0) {
@@ -82,6 +86,22 @@ fun AccountTitleRow(
             modifier = Modifier.weight(1f),
         )
         trailing()
+    }
+}
+
+/**
+ * 账号标识的紧凑显示：UUID / 长哈希只保留首尾 8 位，中间省略。
+ *
+ * 有些供应商（如 WorkBuddy）登录响应里没有昵称，只能拿 uid 顶替；
+ * 一串 36 位 UUID 既撑爆卡片又分不清是哪个号。短 id 保持唯一性的同时可读。
+ */
+private fun shortAccountId(uid: String): String {
+    val trimmed = uid.trim()
+    // 8 位以内本来就是短标识（如 "8985"、"NK1575975"），原样显示
+    return if (trimmed.length <= 16) {
+        trimmed
+    } else {
+        "${trimmed.take(8)}…${trimmed.takeLast(4)}"
     }
 }
 

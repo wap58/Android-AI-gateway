@@ -316,6 +316,12 @@ class TraeProvider(
         }
     }
 
+    /**
+     * 国际版没有签到制度：批量选目标时就排掉，不会跑完再报一堆「国际版没有签到制度」。
+     */
+    override fun supportsAction(account: ProviderAccount, action: String): Boolean =
+        action != ACTION_CHECKIN || regionOfAccount(account) != TraeRegion.INTL
+
     override fun performAction(
         account: ProviderAccount,
         action: String,

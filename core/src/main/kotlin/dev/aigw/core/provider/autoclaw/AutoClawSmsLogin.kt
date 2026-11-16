@@ -121,12 +121,18 @@ internal class AutoClawSmsLogin(
 
         val credential = AutoClawCredential(
             accessToken = token,
-            refreshToken = data.str("refresh_token").ifEmpty { data.str("refreshToken") },
+            // 剥掉可能的 Bearer 前缀（解析处也会剥，这里多一道保险，避免写进脏值）
+            refreshToken = data.str("refresh_token").ifEmpty { data.str("refreshToken") }
+                .let { AutoClawConstants.stripBearer(it) },
             userId = data.str("user_id").ifEmpty { data.str("userId") },
             userName = data.str("user_name").ifEmpty { data.str("userName") }
                 .ifEmpty { phone.takeLast(4) },
             // 手机号登录走的是国内站，token 只能在国内加速域名推理
             realm = AutoClawConstants.REALM_CN,
+            // 记下登录用的 device_id：刷新必须带同一个，否则上游认为设备变了
+            deviceId = deviceId(),
+            // 登录就把到期时间算好存下来，后续判断临期不必再解析 JWT
+            expiresAt = jwtExpSeconds(token),
         )
         val uid = credential.userId.ifEmpty {
             val digest = MessageDigest.getInstance("MD5")
@@ -164,6 +170,21 @@ internal class AutoClawSmsLogin(
     private fun normalizePhone(phone: String, ccode: String): String {
         val digits = phone.filter { it.isDigit() }
         return if (ccode == "86" || digits.startsWith(ccode)) digits else ccode + digits
+    }
+
+    /** 从 JWT 取 `exp`（秒）；解析不出返回 0。 */
+    private fun jwtExpSeconds(token: String): Long {
+        val raw = AutoClawConstants.stripBearer(token)
+        val parts = raw.split('.')
+        if (parts.size < 2) return 0L
+        return runCatching {
+            var b64 = parts[1].replace('-', '+').replace('_', '/')
+            val remainder = b64.length % 4
+            if (remainder != 0) b64 += "=".repeat(4 - remainder)
+            val payload = java.util.Base64.getDecoder().decode(b64)
+            val obj = com.google.gson.JsonParser.parseString(String(payload, Charsets.UTF_8)).asJsonObject
+            obj.get("exp")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun post(path: String, body: String, productHeader: String = PRODUCT_WEB): Pair<Int, String> {

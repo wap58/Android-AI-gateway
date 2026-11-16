@@ -130,11 +130,27 @@ fun PageScaffold(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 14.dp),
+                // 悬浮底栏浮在内容之上，列表自己把最后一项顶上来，否则会被玻璃盖住
+                .padding(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 14.dp,
+                    bottom = 14.dp + LocalBottomContentPadding.current,
+                ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
             content = content,
         )
     }
+}
+
+/**
+ * 悬浮底栏占用的底部内边距。
+ *
+ * 开启悬浮底栏时内容铺满全屏（底栏是层叠上去的），列表页必须自己把最后一项
+ * 顶上来，否则会被玻璃胶囊盖住。由 MainActivity 按开关注入。
+ */
+val LocalBottomContentPadding = androidx.compose.runtime.staticCompositionLocalOf<androidx.compose.ui.unit.Dp> {
+    androidx.compose.ui.unit.Dp(0f)
 }
 
 /**

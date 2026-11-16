@@ -70,6 +70,7 @@ import dev.aigw.app.ui.MeScreen
 import dev.aigw.app.ui.ModelsScreen
 import dev.aigw.app.ui.ProviderDetailScreen
 import dev.aigw.app.ui.ProviderListScreen
+import dev.aigw.app.ui.RequestRewriteScreen
 import dev.aigw.app.ui.ProviderCreditsScreen
 import dev.aigw.app.ui.ProxyScreen
 import dev.aigw.app.ui.ResilienceScreen
@@ -82,6 +83,30 @@ import dev.aigw.app.ui.providers.ProviderUiRegistry
 import dev.aigw.app.ui.theme.AiGatewayTheme
 import dev.aigw.app.ui.theme.AppColors
 import dev.aigw.app.ui.theme.LocalAppColors
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.material3.ScaffoldDefaults
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.aigw.app.ui.LocalBottomContentPadding
+import androidx.compose.ui.draw.shadow
 
 class MainActivity : ComponentActivity() {
 
@@ -178,10 +203,23 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
         }
     }
 
+    // 玻璃采样状态：内容层写入，底栏读取
+    val hazeState = remember { dev.chrisbanes.haze.HazeState() }
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalBottomContentPadding provides if (state.floatingNavBar) 92.dp else 0.dp,
+    ) {
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         snackbarHost = { SnackbarHost(snackbarHostState) },
+        // 悬浮底栏时让内容铺到屏幕底部，由导航栏自己层叠在上面
+        contentWindowInsets = if (state.floatingNavBar) WindowInsets(0) else ScaffoldDefaults.contentWindowInsets,
         bottomBar = {
+            if (state.floatingNavBar) {
+                FloatingNavBar(tab, subPage, hazeState, onSelect = { item ->
+                    subPage = null
+                    tab = item
+                })
+            } else {
             val selectedGold = LocalAppColors.current.goldStart
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                 Tab.entries.forEach { item ->
@@ -203,9 +241,22 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                     )
                 }
             }
+            }
         },
     ) { insets ->
-        Box(Modifier.fillMaxSize().padding(bottom = insets.calculateBottomPadding())) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                // 悬浮底栏时内容铺满全屏，不因 insets 向上抬：
+                // 否则底栏背后是一片空白背景，玻璃无像素可采样，看起来完全没模糊
+                .then(
+                    if (state.floatingNavBar) {
+                        Modifier.hazeSource(hazeState)
+                    } else {
+                        Modifier.padding(bottom = insets.calculateBottomPadding())
+                    },
+                ),
+        ) {
             // 二级页推拉过渡：推入从右滑入，返回向右滑出
             AnimatedContent(
                 targetState = subPage,
@@ -256,6 +307,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.ApiSettings -> ApiSettingsScreen(state, viewModel) { subPage = null }
                 SubPage.SecurityProtection -> SecurityProtectionScreen(state, viewModel) { subPage = null }
                 SubPage.Resilience -> ResilienceScreen(state, viewModel) { subPage = null }
+                SubPage.RequestRewrite -> RequestRewriteScreen(state, viewModel) { subPage = null }
                 SubPage.AppearanceTheme -> AppearanceThemeScreen(state, viewModel) { subPage = null }
                 is SubPage.Models -> ModelsScreen(
                     state = state,
@@ -279,6 +331,7 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 }
             }
         }
+    }
     }
 
     state.updateInfo?.let { info ->
@@ -363,6 +416,130 @@ private fun MainTabs(
             )
             Tab.Logs -> LogsScreen(state, viewModel)
             Tab.Me -> MeScreen(state, viewModel, open = { onSubPage(it) })
+        }
+    }
+}
+
+/**
+ * 悬浮底栏：iOS 26 液态玻璃胶囊（移植自上游 2.37.1）。
+ *
+ * 形状是**胶囊**：圆角半径 = 高度的一半，所以用 CircleShape 而不是固定 dp；
+ * 宽度按内容收缩后居中，不铺满屏幕 —— 铺满再加圆角矩形看起来完全不是那个东西。
+ *
+ * 玻璃靠 Haze 把内容层当采样源做背景模糊 + 饱和度提升 + 色调叠加，
+ * 再自己画顶部高光与内描边（高光是玻璃的关键，没有它只是一块毛玻璃）。
+ */
+@Composable
+private fun FloatingNavBar(
+    tab: Tab,
+    subPage: SubPage?,
+    haze: dev.chrisbanes.haze.HazeState,
+    onSelect: (Tab) -> Unit,
+) {
+    val selectedGold = LocalAppColors.current.goldStart
+    val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(IntrinsicSize.Max)
+                .shadow(
+                    elevation = 16.dp,
+                    shape = CircleShape,
+                    ambientColor = Color.Black.copy(alpha = 0.30f),
+                    spotColor = Color.Black.copy(alpha = 0.40f),
+                )
+                .clip(CircleShape)
+                .hazeEffect(
+                    state = haze,
+                    style = dev.chrisbanes.haze.HazeStyle(
+                        backgroundColor = MaterialTheme.colorScheme.surface.copy(
+                            alpha = if (isLight) 0.40f else 0.24f,
+                        ),
+                        tints = listOf(
+                            dev.chrisbanes.haze.HazeTint(
+                                color = MaterialTheme.colorScheme.surface.copy(
+                                    alpha = if (isLight) 0.26f else 0.18f,
+                                ),
+                            ),
+                        ),
+                        blurRadius = 28.dp,
+                        noiseFactor = 0.05f,
+                    ),
+                )
+                .drawWithContent {
+                    drawContent()
+                    // 胶囊内描边：玻璃边缘的一圈亮线
+                    val border = 1.dp.toPx()
+                    drawRoundRect(
+                        color = Color.White.copy(alpha = if (isLight) 0.60f else 0.20f),
+                        topLeft = Offset(border / 2f, border / 2f),
+                        size = Size(size.width - border, size.height - border),
+                        cornerRadius = CornerRadius(size.height / 2f),
+                        style = Stroke(width = border),
+                    )
+                    // 顶部高光：胶囊上半部分被照亮
+                    val highlightHeight = size.height * 0.55f
+                    drawRect(
+                        brush = Brush.verticalGradient(
+                            colors = listOf(
+                                Color.White.copy(alpha = if (isLight) 0.55f else 0.18f),
+                                Color.Transparent,
+                            ),
+                            startY = 0f,
+                            endY = highlightHeight,
+                        ),
+                        size = Size(size.width, highlightHeight),
+                    )
+                },
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Tab.entries.forEach { item ->
+                    val selected = subPage == null && tab == item
+                    Row(
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            // 选中项用一层极淡的亮色「胶囊内胶囊」，而不是改文字颜色
+                            .background(
+                                if (selected) {
+                                    selectedGold.copy(alpha = if (isLight) 0.16f else 0.20f)
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                            .clickable { onSelect(item) }
+                            .padding(horizontal = 14.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Icon(
+                            imageVector = item.icon,
+                            contentDescription = item.label,
+                            tint = if (selected) selectedGold else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(19.dp),
+                        )
+                        // 只给选中项显示文字，未选中只留图标：这才是 iOS 胶囊栏的形态
+                        if (selected) {
+                            Text(
+                                text = item.label,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = selectedGold,
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

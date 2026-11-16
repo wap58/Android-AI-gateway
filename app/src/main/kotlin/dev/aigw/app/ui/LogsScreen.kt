@@ -8,6 +8,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -219,7 +222,13 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f).fillMaxWidth().scrollFade(listState),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 20.dp),
+            // 悬浮底栏是层叠在内容之上的：不开这个内边距，最后一项会被玻璃胶囊盖住。
+            // LocalBottomContentPadding 由 MainActivity 按开关注入（关掉时为 0.dp）。
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                bottom = 20.dp + LocalBottomContentPadding.current,
+            ),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             if (tab == LogTab.Calls) {
@@ -233,7 +242,10 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                         }
                     }
                 } else {
-                    items(calls, key = { it.id }) { record ->
+                    // key 用 id + 下标：历史数据里 id 可能为空或重复（旧版本没写 id），
+                    // LazyColumn 遇到重复 key 会直接抛异常崩掉整个页面。
+                    val indexed = calls.withIndex().toList()
+                    items(indexed, key = { "${it.value.id}#${it.index}" }) { (_, record) ->
                         SectionCard {
                             CallRow(record, onClick = { detail = record }, onLongClick = { viewModel.deleteCall(record.id) })
                         }
@@ -251,7 +263,10 @@ fun LogsScreen(state: AppUiState, viewModel: AppViewModel) {
                         }
                     }
                 } else {
-                    items(records, key = { it.seq }) { r -> SectionCard { CheckinRow(r) } }
+                    // 同理：seq 是自增号，理论上唯一；这里加成对保底，防旧数据出现重复
+                    items(records.withIndex().toList(), key = { "${it.value.seq}#${it.index}" }) { (_, r) ->
+                        SectionCard { CheckinRow(r) }
+                    }
                 }
             } else {
                 if (logs.isEmpty()) {
@@ -298,15 +313,15 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                text = record.model.ifEmpty { "未指定模型" },
+                // 模型名缺失（旧记录或异常写入路径）时给明确占位；纯空白串同样回落，
+                // 否则头部会出现「看着像什么都没渲染」的空白。
+                text = record.model.ifBlank { "未指定模型" },
                 style = MaterialTheme.typography.titleMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.weight(1f),
             )
-            Text(
-                text = statusLabel(record.status),
-                style = MaterialTheme.typography.labelSmall,
-                color = statusColor(record.status),
-            )
+            StatusBadge(record.status)
         }
         Text(
             text = buildString {
@@ -316,9 +331,18 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            MetricChip("耗时", "${record.durationMillis}ms", MaterialTheme.colorScheme.onSurfaceVariant)
+        // 胶囊行用 FlowRow：横向放不下时整块换行，任何宽度下每个胶囊都保持自然宽度，
+        // 不会被压到「剩余宽度」里把文字折成多行（旧实现里最后的「积分」胶囊因此变成
+        // 近似圆形的徽章，标签折成两行，看起来像「积 / 19 / 分」上下堆叠）。
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            MetricChip("耗时", formatDuration(record.durationMillis), MaterialTheme.colorScheme.onSurfaceVariant)
             // 耗时拆解：判断「慢在网关」还是「慢在上游」的关键。三者都非 0 才展示，避免历史记录里一堆 0ms。
             if (record.preprocessMillis > 0 || record.firstTokenMillis > 0 || record.upstreamMillis > 0) {
                 MetricChip(
@@ -357,6 +381,7 @@ private fun CallRow(record: CallRecord, onClick: () -> Unit, onLongClick: () -> 
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -369,8 +394,8 @@ private fun MetricChip(label: String, value: String, tone: Color) {
         modifier = Modifier
             .clip(CircleShape)
             .background(tone.copy(alpha = 0.10f))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -378,13 +403,41 @@ private fun MetricChip(label: String, value: String, tone: Color) {
             style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
             color = tone,
             fontWeight = FontWeight.SemiBold,
+            // 两个 Text 都禁止折行：宽度不足时只省略，绝不折成多行把胶囊撑成方块
+            // （曾导致「积分」胶囊被挤窄后标签折行、外观像文字上下堆叠）
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
         Text(
             text = label,
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Ellipsis,
         )
     }
+}
+
+/**
+ * 状态徽章：成功 / 失败 / 中断三态都有稳定的底色与文字。
+ *
+ * 不能只留一个无底色的小字——一旦头部字段异常，那一行看起来就像完全没渲染。
+ */
+@Composable
+private fun StatusBadge(status: CallStatus) {
+    val tone = statusColor(status)
+    Text(
+        text = statusLabel(status),
+        style = MaterialTheme.typography.labelSmall,
+        color = tone,
+        maxLines = 1,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(tone.copy(alpha = 0.10f))
+            .padding(horizontal = 7.dp, vertical = 3.dp),
+    )
 }
 
 @Composable

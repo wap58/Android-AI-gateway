@@ -694,17 +694,43 @@ class CodeBuddyProvider(
             // ---- 5. 回读验证 + 逐个重试未落账的 ----
             val after = readTasks(base, headers) ?: return@runCatching
             val pending = ArrayList<String>()
+            val claimable = ArrayList<String>()
             for (element in after) {
                 val task = runCatching { element.asJsonObject }.getOrNull() ?: continue
                 val taskCode = task.firstString("task_code")
                 if (taskCode !in todo) continue
                 val st = task.firstString("accept_status")
-                if (st != "accepted" && st != "claimed") pending.add(taskCode)
+                if (st != "accepted" && st != "claimed") {
+                    pending.add(taskCode)
+                    continue
+                }
+                // 已接单且进度达标、但还没领奖的：奖励不在 accept 响应里，要单独 claim
+                val progress = task.objOrNull("progress")
+                val target = progress?.firstLong("target")?.takeIf { it > 0 } ?: 1L
+                val current = progress?.firstLong("current") ?: 0L
+                if (st != "claimed" && current >= target) claimable.add(taskCode)
             }
             for (taskCode in pending) {
                 val one = JsonObject().apply { addProperty("task_code", taskCode) }.toString()
                 runCatching { postJson("$base/tasks/accept", credential, one, headers) }
             }
+
+            // ---- 5b. 领奖：官方客户端上「领取奖励」那一步，与接单是两条链路 ----
+            var claimedCredit = 0L
+            for (taskCode in claimable) {
+                runCatching {
+                    // 注意路径：/tasks/{code}/claim（不带 /v2 前缀，响应里是 data.credit）
+                    val url = "${chatBase(credential)}$PATH_GROWTH/tasks/$taskCode/claim"
+                    val (status, body) = postJson(url, credential, "{}", headers)
+                    if (status !in 200..299) return@runCatching
+                    val envelope = jsonOf(body)
+                    // 200 + 非 0 业务码（典型 task not completed）算失败，不能当领到
+                    if (envelope?.get("code")?.asLong?.let { it != 0L } == true) return@runCatching
+                    val credit = envelope?.let { dataOrRoot(it) }?.firstLong("credit") ?: 0L
+                    if (credit > 0) claimedCredit += credit
+                }
+            }
+            if (claimedCredit > 0) parts.add("领奖 +$claimedCredit 积分")
 
             // ---- 6. 汇总 ----
             val accepted = todo.size - pending.size
@@ -1120,10 +1146,28 @@ class CodeBuddyProvider(
 
     // ------------------------------------------------------------------ 设备授权登录
 
+    /**
+     * 授权端点的「不带鉴权」声明头。
+     *
+     * state / token 两个端点必须**显式声明自己不携带鉴权信息**，否则上游会把它当
+     * 「缺凭据的普通请求」直接拒掉（国内版登录回来就报错的根因）。
+     * 参考两套独立实现（cainiao1992/dsh-codebuddy-auth、CLIProxyAPIPlus）。
+     */
+    private fun noAuthHeaders(base: String): Map<String, String> = mapOf(
+        "X-Requested-With" to "XMLHttpRequest",
+        "X-Domain" to base,
+        "X-No-Authorization" to "true",
+        "X-No-User-Id" to "true",
+        "X-No-Enterprise-Id" to "true",
+        "X-No-Department-Info" to "true",
+        "X-Product" to "SaaS",
+        "X-Request-ID" to java.util.UUID.randomUUID().toString(),
+    )
+
     override fun startDeviceAuth(region: String): DeviceAuthTicket {
         val base = endpointOf(region).chatBase
         val (status, text) = try {
-            postJson("$base$PATH_AUTH_STATE?platform=CLI", null, "{}", emptyMap())
+            postJson("$base$PATH_AUTH_STATE?platform=CLI", null, "{}", noAuthHeaders(base))
         } catch (e: Exception) {
             throw IllegalStateException("请求授权链接失败：${e.message}")
         }
@@ -1139,7 +1183,7 @@ class CodeBuddyProvider(
         val base = endpointOf(region).chatBase
         val encoded = URLEncoder.encode(state, "UTF-8")
         val (status, text) = try {
-            getJson("$base$PATH_AUTH_TOKEN?state=$encoded")
+            getJson("$base$PATH_AUTH_TOKEN?state=$encoded", noAuthHeaders(base))
         } catch (e: Exception) {
             return DeviceAuthPoll.Failed(e.message ?: "轮询失败")
         }
@@ -1153,7 +1197,10 @@ class CodeBuddyProvider(
             return DeviceAuthPoll.Failed(message.ifEmpty { "登录未完成（code=$code）" })
         }
         val data = obj.objOrNull("data") ?: return DeviceAuthPoll.Failed("登录响应缺少 data")
-        return DeviceAuthPoll.Success(toProviderAccount(credentialOf(data)))
+        // 只有拿到 accessToken 才算成功；其余业务码继续等（不把「还没好」当错误弹给用户）
+        val account = toProviderAccount(credentialOf(data))
+        if (account.secret.isBlank()) return DeviceAuthPoll.Pending
+        return DeviceAuthPoll.Success(account)
     }
 
     // ------------------------------------------------------------------ 上游
@@ -1494,7 +1541,11 @@ class CodeBuddyProvider(
                 .ifEmpty { jwtClaim(accessToken, "user_id", "userId", "uid", "sub") },
             enterpriseId = obj.firstString("enterpriseId", "enterprise_id", "entId", "tenantId", "tenant_id")
                 .ifEmpty { jwtClaim(accessToken, "tenant_id", "tenantId", "enterprise_id", "enterpriseId") },
-            nickname = obj.firstString("nickname", "nickName", "name"),
+            // 昵称：响应里通常没有，从 JWT 兜底取手机号/邮箱，比裸 UUID 好认得多
+            nickname = obj.firstString("nickname", "nickName", "name")
+                .ifEmpty { jwtClaim(accessToken, "nickname", "name", "user_name", "userName") }
+                .ifEmpty { jwtClaim(accessToken, "email", "mail") }
+                .ifEmpty { jwtClaim(accessToken, "phone", "mobile", "phoneNumber", "phone_number") },
         )
     }
 

@@ -225,6 +225,30 @@ class GatewayEngine(
         asyncWrites = asyncCallLogWrites,
     )
     val requestLog = RequestLog(store, nowMillis = nowMillis)
+
+    /**
+     * 请求改写链（模型别名 / system 追加 / 剥离 think 标签）。
+     *
+     * 设置存 [MiddlewareChain.SETTINGS_KEY]，改动后调用 [reloadMiddleware] 重建。
+     * 铁律：中间件抛异常就跳过，绝不让可选增强把用户的请求弄失败。
+     */
+    @Volatile
+    private var middlewareChain: MiddlewareChain = MiddlewareChain()
+
+    /** 请求改写设置（界面读写用）。 */
+    fun middlewareSettings(): MiddlewareSettings =
+        MiddlewareSettings.fromJson(store.read(MiddlewareChain.SETTINGS_KEY))
+
+    fun saveMiddlewareSettings(settings: MiddlewareSettings) {
+        store.write(MiddlewareChain.SETTINGS_KEY, settings.toJson().toString())
+        reloadMiddleware()
+    }
+
+    fun reloadMiddleware() {
+        middlewareChain = MiddlewareChain.build(middlewareSettings())
+    }
+
+    fun middleware(): MiddlewareChain = middlewareChain
     val registry = ProviderRegistry()
 
     val sanitizer = dev.aigw.core.security.RequestSanitizer(nowMillis)
@@ -275,6 +299,10 @@ class GatewayEngine(
     private val scheduler: ScheduledExecutorService = ScheduledThreadPoolExecutor(2) { runnable ->
         Thread(runnable, "aigw-sched").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
+
+    /** 凭证保鲜任务是否已启动（start 可能被多次调用）。 */
+    @Volatile
+    private var tokenMaintenanceStarted = false
 
     /** 供 HTTP 层复用同一套后台线程池与定时器。 */
     internal fun ioExecutor(): ThreadPoolExecutor = ioPool
@@ -617,9 +645,66 @@ class GatewayEngine(
             created.start(0, false)
             server = created
             log("网关已启动，监听 ${created.listeningAddress()}")
+            startTokenMaintenance()
         }
     }
 
+    /**
+     * 后台定时保鲜：每 10 分钟扫一遍账号，把**临期**的 token 主动刷新掉。
+     *
+     * ★ 为什么必须有（2026-11-15 定位到的一天一掉线根因）：
+     *   只在「请求时」判断临期是不够的 —— 一段时间没人用，token 就过期了，
+     *   而过期的 access token 已经无法再用 refresh 续期（上游要求 access token
+     *   还有效才给换新），下一次请求必然 410000 然后账号被禁用。
+     *   参考实现（Agent2Providers）靠的就是「网关维护任务 + 5 分钟窗口」。
+     *
+     * 只调用 `refreshAccount`（各 provider 自己判断临期），不碰对话链路。
+     */
+    private fun startTokenMaintenance() {
+        if (tokenMaintenanceStarted) return
+        tokenMaintenanceStarted = true
+        val period = TOKEN_MAINTENANCE_INTERVAL_MINUTES
+        scheduler.scheduleWithFixedDelay(
+            {
+                runCatching { refreshExpiringTokens() }
+                    .onFailure { logWarn("凭证保鲜任务异常：${it.message}") }
+            },
+            1, period, TimeUnit.MINUTES,
+        )
+        log("凭证保鲜任务已启动（每 $period 分钟检查一次）")
+    }
+
+    /** 扫一遍所有账号，做一次无条件续期（保鲜）。 */
+    private fun refreshExpiringTokens() {
+        val providers = registry.all().filter { providerSettings(it.id).enabled }
+        for (provider in providers) {
+            for (stored in accounts(provider.id)) {
+                if (stored.disabled || !stored.enabled) continue
+                // accounts() 给的是 AccountStatus（不含 secret），要拿 ProviderAccount 才能刷新
+                val full = pool.account(provider.id, stored.uid) ?: continue
+                val refreshed = try {
+                    provider.keepAliveCredential(full)
+                } catch (e: Exception) {
+                    logWarn("凭证保鲜失败（${provider.id}/${stored.nickname}）：${e.message}")
+                    null
+                }
+                if (refreshed == null) {
+                    // 未实现 keepAlive 的供应商返回 null 是常态（不打日志）；
+                    // AutoClaw 实现了却返回 null 说明刷新失败，必须留痕，
+                    // 否则只会看到「任务已启动」却永远没有续期记录。
+                    if (provider is dev.aigw.core.provider.autoclaw.AutoClawProvider) {
+                        logWarn("凭证保鲜未续期（${provider.id}/${stored.nickname}）")
+                    }
+                    continue
+                }
+                // 只回存真正拿到新凭证的（token 变了），避免每轮都写盘
+                if (refreshed.secret != full.secret) {
+                    pool.saveAccount(refreshed)
+                    log("凭证已自动续期（${provider.id}/${stored.nickname}）")
+                }
+            }
+        }
+    }
     fun stop() {
         synchronized(lifecycleLock) {
             server?.stop()
@@ -2074,6 +2159,15 @@ class GatewayEngine(
         val AUTO_MODEL_IDS = setOf("auto", "default-model", "trae-auto-model")
 
         const val DAY_MILLIS = 24L * 3600 * 1000
+
+        /**
+         * 凭证保鲜任务的检查间隔（分钟）。
+         *
+         * 6 小时：AutoClaw 的 access token 大约一天过期，6 小时一轮足够在过期前
+         * 至少刷到一次；同时这个窗口也作为 refreshAccount 的 skew 传入 —— 每轮
+         * 检查时「6 小时内要过期的」都先刷掉，避免 token 在两次检查之间悄悄过期。
+         */
+        const val TOKEN_MAINTENANCE_INTERVAL_MINUTES = 60L
 
         /** 详细日志单条上限：环形日志每条都全量展示，太长会淹没其它日志。 */
         const val VERBOSE_LINE_LIMIT = 1500

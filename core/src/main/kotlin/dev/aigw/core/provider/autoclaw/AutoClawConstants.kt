@@ -107,13 +107,40 @@ internal object AutoClawConstants {
             "X-Product" to "autoclaw",
             "X-Version" to CLIENT_VERSION,
             "X-Tm" to "linux",
+            // ★ 官方客户端指纹的一部分。缺这两个头时上游仍会 200，
+            //   但**不会真正轮换 refresh_token**——表现就是「24 小时后必掉线，
+            //   刷新时报 400000 User not logged in」（refresh_token 有绝对有效期，
+            //   只有真正轮换才延长）。2026-11-16 对照参考实现 refresh.rs:241-284 补齐。
+            "X-Harness-Type" to "zcode",
+            "X-Channel" to "official",
             "X-Auth-Appid" to APP_ID,
             "X-Auth-TimeStamp" to nowSeconds.toString(),
             "X-Auth-Sign" to sign(nowSeconds),
             "X-Trace-Id" to UUID.randomUUID().toString(),
-            "X-Lang" to "en",
+            "X-Lang" to "zh-CN",
             "X-Client-Type" to "pc",
         )
+
+    /**
+     * 循环剥掉 `Bearer ` 前缀（对齐 Agent2Providers `crypto.rs::strip_bearer`）。
+     *
+     * ★ 为什么必须循环：历史数据里出现过 `Bearer Bearer eyJ…` 双前缀
+     *   （一次剥不完），单次 removePrefix 只会留下第二层。
+     *   另外「恰好等于 Bearer」要返回空串——那是只有前缀没有凭证的脏值，
+     *   原样返回会让调用方拼出 `Bearer Bearer`。
+     */
+    fun stripBearer(value: String): String {
+        var current = value.trim()
+        while (true) {
+            if (current.length < 6 || !current.regionMatches(0, "bearer", 0, 6, ignoreCase = true)) {
+                return current
+            }
+            val rest = current.substring(6)
+            if (rest.isEmpty()) return ""
+            if (!rest[0].isWhitespace()) return current  // `Bearerxyz` 不构成前缀
+            current = rest.trimStart()
+        }
+    }
 
     /**
      * 带凭证的 userapi 请求头。
@@ -130,7 +157,7 @@ internal object AutoClawConstants {
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ): MutableMap<String, String> {
         val headers = userApiHeaders(nowSeconds)
-        val raw = accessToken.removePrefix("Bearer ").removePrefix("bearer ").trim()
+        val raw = AutoClawConstants.stripBearer(accessToken)
         if (raw.isNotEmpty()) headers["authorization"] = "Bearer $raw"
         return headers
     }

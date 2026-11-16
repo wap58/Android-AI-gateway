@@ -103,6 +103,13 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "明暗模式、配色方案与金色文字",
                 appearanceMeta(state),
             ) { open(SubPage.AppearanceTheme) }
+            EditorialSwitchRow(
+                index = "",
+                title = "悬浮底栏",
+                subtitle = "导航栏改为浮在内容上的液态玻璃胶囊",
+                checked = state.floatingNavBar,
+                onCheckedChange = { viewModel.setFloatingNavBar(it) },
+            )
         }
 
         EditorialGroupHeader("", "核心功能偏好")
@@ -120,6 +127,12 @@ fun MeScreen(state: AppUiState, viewModel: AppViewModel, open: (SubPage) -> Unit
                 "并发闸门、重试退避与熔断器",
                 concurrencySummary(state.failover),
             ) { open(SubPage.Resilience) }
+            EditorialRow(
+                "",
+                "请求改写",
+                "模型别名、system 追加与思考标签",
+                if (state.middleware.isActive) "已启用" else "未启用",
+            ) { open(SubPage.RequestRewrite) }
             EditorialRow(
                 "",
                 "额度中心",

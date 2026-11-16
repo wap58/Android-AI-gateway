@@ -274,6 +274,8 @@ class QoderProvider(
         val realm = if (callbackUrl.contains("qoder-work-cn")) QoderRealm.CN else currentRealm()
         val base = QoderCredential(accessToken = token, realm = realm)
         val enriched = runCatching { fetchUserInfo(base) }.getOrDefault(base)
+        // 刚登录的 token 一定是新的：记下时间，避免第一个请求又白刷一次
+        lastRefreshOkAt[enriched.uid] = nowMillis() / 1000
         hooks.onLog("Qoder：网页登录成功（${enriched.realm}，uid=${enriched.uid.take(8)}）")
         return toAccount(enriched)
     }
@@ -1011,7 +1013,31 @@ class QoderProvider(
         // ★ 刷新必须串行。OAuth 的 refresh_token 是一次性的：模型列表、额度、
         //   签到、对话若同时触发刷新，第一个成功后 token 即作废，其余的必然
         //   401 —— 用户看到的就是「刚登录没多久又掉线」。
-        synchronized(refreshLock) { doRefresh(account) }
+        synchronized(refreshLock) {
+            // ★ 没临期就别刷：对话路径每个请求都会调本方法，原来忽略 skewSeconds
+            //   等于「每个请求刷一次 token」——OAuth refresh_token 是一次性的，
+            //   高频轮换本身就是上游风控吊销的触发条件，日志里会看到一直在刷新。
+            //   skewSeconds <= 0 表示调用方要求强制刷新（签到等低频场景）。
+            if (skewSeconds > 0) {
+                val credential = credentialOf(account) ?: return@synchronized null
+                val nowSeconds = nowMillis() / 1000
+                when {
+                    // 有有效期限：按临期判断
+                    credential.expiresAt > 0 -> {
+                        if (credential.expiresAt - nowSeconds > skewSeconds) return@synchronized null
+                    }
+                    // 上游没给期限：按「距上次刷新超过 1 小时」判断。
+                    // 既不每个请求都刷（高频轮换会触发上游风控吊销），也不会永不刷。
+                    else -> {
+                        val last = lastRefreshOkAt[account.uid] ?: 0L
+                        if (last > 0 && nowSeconds - last < UNKNOWN_EXPIRY_REFRESH_INTERVAL) {
+                            return@synchronized null
+                        }
+                    }
+                }
+            }
+            doRefresh(account)
+        }
 
     private fun doRefresh(account: ProviderAccount): ProviderAccount? {
         val credential = credentialOf(account) ?: return null
@@ -1071,6 +1097,8 @@ class QoderProvider(
                     "refresh=${data.str("refresh_token").ifEmpty { data.str("refreshToken") }.take(6)} " +
                     "响应字段=${obj.keySet().joinToString(",")}",
             )
+            // 记录刷新时间：有效期限未知（expiresAt=0）的账号靠它判断多久没刷了
+            lastRefreshOkAt[credential.uid] = nowMillis() / 1000
             return toAccount(
                 credential.copy(
                     accessToken = token,
@@ -1558,6 +1586,19 @@ class QoderProvider(
 
         /** 刷新串行锁：refresh_token 一次有效，并发刷新会互相作废。 */
         private val refreshLock = Any()
+
+        /**
+         * 上次刷新成功的时间（秒，按 uid）。
+         *
+         * 为什么需要它：Qoder 上游经常不返回 `expires_at`（=0），此时无法按临期判断。
+         * 没有这个表，「无法判断」就只能两种烂选择——要么每次请求都刷（高频轮换，
+         * 正是上游风控吊销的触发条件），要么永不刷（token 几小时后过期，全部 401）。
+         * 用「距上次刷新超过 [UNKNOWN_EXPIRY_REFRESH_INTERVAL] 才刷」给出中间解。
+         */
+        private val lastRefreshOkAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        /** 有效期限未知时的刷新间隔：access token 通常几小时过期，一小时刷一次足够安全。 */
+        private const val UNKNOWN_EXPIRY_REFRESH_INTERVAL = 3600L
 
         /** 桌面端机器 OS 标识（与 runtime-info 的 linux 分支一致）。 */
         private const val MACHINE_OS = "x86_64_linux"

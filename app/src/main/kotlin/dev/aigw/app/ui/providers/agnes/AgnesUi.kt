@@ -3,6 +3,7 @@ package dev.aigw.app.ui.providers.agnes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Extension
@@ -20,7 +21,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-import dev.aigw.app.ui.ChoiceChip
+import androidx.compose.material.icons.filled.Language
+import dev.aigw.app.ui.RegionSelector
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
 import dev.aigw.app.ui.providers.ProviderUi
@@ -64,22 +66,34 @@ object AgnesUi : ProviderUi {
         val endpoint = if (isGlobal) "https://apihub.agnes-ai.com/v1" else "https://api.agnes-ai.cn/v1"
 
         SectionCard {
-            SectionLabel("服务区域")
+            // 与其他多区域供应商（Trae / CodeBuddy / Qoder）统一：地球图标 + 标题在左，
+            // 胶囊切换器在右，不再用并排的 ChoiceChip。
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                ChoiceChip("国内", !isGlobal) {
-                    region = REGION_CN
-                    actions.onUpdateProviderOption(id, "region", REGION_CN)
-                    actions.onRegionPicked(REGION_CN)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Language,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    SectionLabel("服务区域")
                 }
-                ChoiceChip("国际", isGlobal) {
-                    region = REGION_GLOBAL
-                    actions.onUpdateProviderOption(id, "region", REGION_GLOBAL)
-                    actions.onRegionPicked(REGION_GLOBAL)
-                }
+                RegionSelector(
+                    isGlobal = isGlobal,
+                    onSelectGlobal = { toGlobal ->
+                        val target = if (toGlobal) REGION_GLOBAL else REGION_CN
+                        region = target
+                        actions.onUpdateProviderOption(id, "region", target)
+                        actions.onRegionPicked(target)
+                    },
+                )
             }
             Text(
                 text = "接口：$endpoint",
