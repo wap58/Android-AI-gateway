@@ -39,6 +39,7 @@ import dev.aigw.app.ui.PagedAccountList
 import dev.aigw.app.ui.RegionSelector
 import dev.aigw.app.ui.SectionCard
 import dev.aigw.app.ui.SectionLabel
+import dev.aigw.app.ui.SubPage
 import dev.aigw.app.ui.bouncyClick
 import dev.aigw.app.ui.accountStatusText
 import dev.aigw.app.ui.providers.ProviderUi
@@ -205,134 +206,14 @@ object CodeBuddyUi : ProviderUi {
                             actions.onAction(id, status.uid, ACTION_CHECKIN, JsonObject())
                         }
                         ChoiceChip("一键任务", false) {
+                            // 先跑一次领奖，再进明细页看结果；任务多时不把列表塞在卡里
                             actions.onAction(id, status.uid, ACTION_TASKS, JsonObject())
+                            actions.onOpenSubPage(SubPage.ProviderTaskCenter(id, status.uid))
                         }
                     }
-                    TaskListSection(status, actions)
                 }
             },
         )
     }
 
-    /**
-     * 任务中心明细：拉取该账号的成长任务清单，逐条展示完成度（已完成 / 可领取 / 进行中 / 未解锁）。
-     *
-     * 对照参考实现（WorkBuddy 反代）：`/v2/activity/growth/tasks` 返回 `tasks[]`，
-     * 每条含 title / current / target / accept_status / locked / claimed；
-     * 进度达标又未领取的可点「领取」调 ACTION_TASKS。
-     */
-    @Composable
-    private fun TaskListSection(status: AccountStatus, actions: ProviderUiActions) {
-        val view = actions.taskListOf(id, status.uid)
-        // 进入账号块时若无缓存则拉一次；账号变化时重拉
-        LaunchedEffect(status.uid) {
-            if (view == null) actions.onLoadTaskList(id, status.uid)
-        }
-
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            SectionLabel("任务中心")
-            Icon(
-                Icons.Filled.Refresh,
-                contentDescription = "刷新任务列表",
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier
-                    .clickable { actions.onLoadTaskList(id, status.uid) }
-                    .padding(start = 8.dp, top = 2.dp, bottom = 2.dp, end = 2.dp),
-            )
-        }
-
-        when {
-            view == null ->
-                Text(
-                    text = "正在加载任务列表…",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            view.error.isNotEmpty() && view.tasks.isEmpty() ->
-                Text(
-                    text = "加载任务失败：${view.error}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-            view.tasks.isEmpty() ->
-                Text(
-                    // 三态：只有上游明确说不在期才说「未开启」，没说就照实说没有任务
-                    text = if (view.inPeriod == false) {
-                        "成长活动未开启，暂无可查看的任务"
-                    } else {
-                        "该账号没有返回任何任务"
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            else -> {
-                val done = view.tasks.count { it.completed }
-                Text(
-                    text = "共 ${view.tasks.size} 个任务 · 已完成 $done 个",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                for (task in view.tasks) {
-                    TaskRow(task, status.uid, actions)
-                }
-            }
-        }
-    }
-
-    @Composable
-    private fun TaskRow(task: ProviderTask, uid: String, actions: ProviderUiActions) {
-        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = task.title,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = taskStatusText(task),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = taskStatusColor(task),
-                )
-            }
-            val meta = buildString {
-                if (task.target > 0) append("进度 ${task.progressText()}")
-                if (task.rewardCredit > 0) {
-                    if (isNotEmpty()) append(" · ")
-                    append("奖励 ${task.rewardCredit} 积分")
-                }
-                if (task.description.isNotEmpty()) {
-                    if (isNotEmpty()) append(" · ")
-                    append(task.description)
-                }
-            }
-            if (meta.isNotEmpty()) {
-                Text(
-                    text = meta,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (task.claimable) {
-                ChoiceChip("领取", false) {
-                    actions.onAction(id, uid, ACTION_TASKS, JsonObject())
-                }
-            }
-        }
-    }
-
-    private fun taskStatusText(task: ProviderTask): String = when {
-        task.claimed -> "已领取"
-        task.completed -> "已完成"
-        task.locked -> "未解锁"
-        else -> "未完成"
-    }
-
-    @Composable
-    private fun taskStatusColor(task: ProviderTask) = when {
-        task.claimed -> MaterialTheme.colorScheme.onSurfaceVariant
-        task.completed -> MaterialTheme.colorScheme.tertiary
-        task.locked -> MaterialTheme.colorScheme.outline
-        else -> MaterialTheme.colorScheme.error
-    }
 }

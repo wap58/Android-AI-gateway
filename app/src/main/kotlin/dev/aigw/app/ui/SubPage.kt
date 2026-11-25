@@ -16,6 +16,14 @@ sealed interface SubPage {
     /** 任务中心：批量签到与额度刷新。 */
     data object TaskCenter : SubPage
 
+    /**
+     * 单个账号的成长任务明细（从供应商详情的「一键任务」进来）。
+     *
+     * 独立成页而不是塞在账号卡里：任务动辄十几条，卡内展示会把卡片撑到两三屏，
+     * 其他账号被挤到很下面。
+     */
+    data class ProviderTaskCenter(val providerId: String, val uid: String) : SubPage
+
     /** 今日免费模型清单：首页跑马灯点进来，看全部免费模型。 */
     data object FreeModels : SubPage
 

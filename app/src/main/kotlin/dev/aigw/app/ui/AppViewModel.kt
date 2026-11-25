@@ -567,7 +567,10 @@ class AppViewModel(
                     // 与能力相与：Android 11 以下没有运行期接口，开关不该显示为「已开」
                     hideRecents = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
                         dev.aigw.app.data.KeepAlivePrefs.hideRecentsEnabled(engine.store()),
-                    checkedInToday = engine.autoCheckinPrefs.isCheckedToday(System.currentTimeMillis()),
+                    // 与自动签到调度器同一判据：按供应商逐一比对周期内的签到记录。
+                    // 用全局 key（isCheckedToday）永远读不到 markChecked(scope=providerId) 写下的值，
+                    // 按钮会一直显示「批量签到」，与实际状态不符。
+                    checkedInToday = runCatching { engine.allCheckinTargetsDone() }.getOrDefault(false),
                     checkinStatusText = engine.autoCheckinPrefs.lastResultParsed().second,
                 )
             }

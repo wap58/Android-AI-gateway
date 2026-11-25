@@ -380,6 +380,10 @@ class GatewayEngine(
             scheduler = scheduler,
             prefs = autoCheckinPrefs,
             runCheckin = { performAutoCheckin() },
+            // 按供应商逐个判「本周期是否已签」。
+            // 不能用全局 key：写入侧是 markChecked(scope = providerId)，
+            // 读全局永远为 false，结果就是每分钟重跑一轮（2026-11-25 修复）。
+            isDoneToday = { allCheckinTargetsDone() },
             nowMillis = nowMillis,
         )
     }
@@ -427,20 +431,7 @@ class GatewayEngine(
      * 返回值：全部成功才为 true（有失败就让首页按钮保持可点，方便手动重试）。
      */
     private fun performAutoCheckin(): Boolean {
-        val infos = providers().filter { it.enabled }
-        val groups = ArrayList<Pair<String, List<BatchTarget>>>()
-        for (info in infos) {
-            val action = when {
-                dev.aigw.core.provider.ProviderCapability.CHECKIN in info.capabilities ->
-                    ACTION_CHECKIN
-                dev.aigw.core.provider.ProviderCapability.TASKS in info.capabilities ->
-                    // 用通用动作名，别再硬编码供应商私有字符串
-                    dev.aigw.core.provider.ACTION_TASKS
-                else -> continue
-            }
-            val targets = accounts(info.id).map { BatchTarget(it.providerId, it.uid) }
-            if (targets.isNotEmpty()) groups.add(action to targets)
-        }
+        val groups = checkinGroups()
         if (groups.isEmpty()) {
             autoCheckinPrefs.setLastResult(false, "没有支持签到/任务的账号")
             return false
@@ -454,16 +445,9 @@ class GatewayEngine(
             total += results.size
             ok += results.count { it.ok }
 
-            // 按供应商记「本周期已签」：每个供应商的周期起点不同
-            // （Qoder 的 100 Credits 是 10:00→次日 10:00），必须分开记，
-            // 否则一个供应商签到成功会把另一个也标成已签。
-            val providerId = targets.firstOrNull()?.providerId.orEmpty()
-            val cycleHour = providerId.takeIf { it.isNotEmpty() }
-                ?.let { id -> registry.get(id)?.checkinCycleStartHour }
-                ?: 0
-            if (results.any { it.ok }) {
-                autoCheckinPrefs.markChecked(nowMillis(), startHour = cycleHour, scope = providerId)
-            }
+            // 「本周期已签」由 performActionAll 在整批成功后按供应商写入（手动/自动共用）。
+            // 这里不再重复写：本函数里再用「任一成功即标记」会把「多账号只成功一个」
+            // 也当成整站完成，失败的账号次日就再也不会重试。
             results.filter { !it.ok }.forEach {
                 failures.add("${it.nickname.ifEmpty { it.uid }}：${it.message}")
             }
@@ -476,6 +460,82 @@ class GatewayEngine(
         }
         autoCheckinPrefs.setLastResult(failed == 0, text)
         return failed == 0
+    }
+
+    /**
+     * 本轮需要签到的目标（供应商 → 动作 + 账号）。
+     *
+     * 抽出来供「执行」与「判断是否已完成」共用，保证两边的目标集合永远一致：
+     * 判定端的集合比执行端多或少一个供应商，都会让自动签到要么漏签、要么反复重跑。
+     */
+    private fun checkinGroups(): List<Pair<String, List<BatchTarget>>> {
+        val groups = ArrayList<Pair<String, List<BatchTarget>>>()
+        for (info in providers().filter { it.enabled }) {
+            val action = checkinActionFor(info) ?: continue
+            val targets = accounts(info.id).map { BatchTarget(it.providerId, it.uid) }
+            if (targets.isNotEmpty()) groups.add(action to targets)
+        }
+        return groups
+    }
+
+    /**
+     * 该供应商在「每日签到」语义下应该跑的动作。
+     *
+     * 有 CHECKIN 能力的走 `ACTION_CHECKIN`；只有 TASKS 能力的（Loomy 这类）走 `ACTION_TASKS`。
+     * 返回 null 表示不参与每日签到。
+     *
+     * ★ 这个映射必须唯一：Trae / WorkBuddy 同时具备两种能力，如果按「用户点了哪个动作」
+     *   来判完成，用户在「批量任务」里点一次就会被误记成「今天签过了」，
+     *   导致当天真正的签到被跳过。
+     */
+    private fun checkinActionFor(info: ProviderInfo): String? = when {
+        dev.aigw.core.provider.ProviderCapability.CHECKIN in info.capabilities ->
+            ACTION_CHECKIN
+        dev.aigw.core.provider.ProviderCapability.TASKS in info.capabilities ->
+            dev.aigw.core.provider.ACTION_TASKS
+        else -> null
+    }
+
+    /** 该供应商参与每日签到时应跑的动作（不在签到范围内返回 null）。 */
+    fun checkinActionOf(providerId: String): String? =
+        providers().firstOrNull { it.id == providerId }?.let { checkinActionFor(it) }
+
+    /** 某个供应商的签到周期起点（Qoder 是 10，其余 0）。 */
+    private fun cycleStartHourOf(providerId: String): Int =
+        runCatching { registry.get(providerId)?.checkinCycleStartHour }.getOrNull() ?: 0
+
+    /** 记录某供应商「本周期已签」。 */
+    private fun markProviderChecked(providerId: String) {
+        autoCheckinPrefs.markChecked(
+            nowMillis(),
+            startHour = cycleStartHourOf(providerId),
+            scope = providerId,
+        )
+    }
+
+    /**
+     * 本轮所有签到目标是否都已在各自周期内完成。
+     *
+     * 这是自动签到调度器的**唯一**前置判据。逐供应商比对「本周期已签」，
+     * 任一供应商没签完就返回 false（让调度器继续/重试）。
+     *
+     * 没有任何可签目标时返回 true——否则空的账号列表会让调度器每分钟空跑一轮。
+     */
+    fun allCheckinTargetsDone(): Boolean {
+        val groups = checkinGroups()
+        if (groups.isEmpty()) return true
+        val now = nowMillis()
+        for ((_, targets) in groups) {
+            val providerId = targets.firstOrNull()?.providerId.orEmpty()
+            if (providerId.isEmpty()) continue
+            val done = autoCheckinPrefs.isCheckedInCycle(
+                now,
+                startHour = cycleStartHourOf(providerId),
+                scope = providerId,
+            )
+            if (!done) return false
+        }
+        return true
     }
 
     /**
@@ -1136,6 +1196,28 @@ class GatewayEngine(
         // 只刷动作成功、余额可能已变的账号：失败的账号余额没动，再打一次上游只会徒增噪音与风控。
         val succeeded = results.filter { it.ok }.map { BatchTarget(it.providerId, it.uid) }
         if (succeeded.isNotEmpty()) refreshCreditsBounded(succeeded, parallelism)
+
+        // ★ 签到日锁：按供应商整体判定，整批成功才记「本周期已签」。
+        //   手动签到与自动签到共用这一个锁（都在本函数里写），
+        //   否则用户手动点完之后自动签到仍认为没签过、再来一轮。
+        //   scope 必须与 allCheckinTargetsDone 的读取口径一致（都是 providerId）。
+        //
+        //   ★ 只在「本次动作 == 该供应商的签到动作」时才写：
+        //     Trae/WorkBuddy 同时有 CHECKIN 与 TASKS 两种能力，用户点「批量任务」
+        //     跑的是 ACTION_TASKS；若那时也写日锁，当天真正的签到就会被误跳过。
+        //   ★ 也要覆盖「只有 TASKS 能力」的供应商（Loomy）：它的签到就是 ACTION_TASKS，
+        //     不写就会永远判未完成，调度器一直重试到当日上限。
+        if (action == ACTION_CHECKIN || action == dev.aigw.core.provider.ACTION_TASKS) {
+            runCatching {
+                for ((providerId, group) in ordered.groupBy { it.providerId }) {
+                    if (checkinActionOf(providerId) != action) continue
+                    val allOk = group.all { t ->
+                        results.any { it.providerId == t.providerId && it.uid == t.uid && it.ok }
+                    }
+                    if (allOk) markProviderChecked(providerId)
+                }
+            }
+        }
         return results
     }
 

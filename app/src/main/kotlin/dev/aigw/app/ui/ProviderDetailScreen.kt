@@ -1,6 +1,7 @@
 package dev.aigw.app.ui
 
 import android.app.Activity
+import dev.aigw.app.ui.SubPage
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -129,6 +130,8 @@ fun ProviderDetailScreen(
 
     // 缓存回调集合：30+ 个 lambda 每次重组重建会让账号卡片永远无法跳过重组。
     // creditPacks/taskLists 随 state 变化，用 rememberUpdatedState 读取最新值。
+    // 任务中心独立成页：非空时整页替换详情内容，避免长任务列表把账号卡撑爆
+    var taskCenterUid by remember { mutableStateOf<String?>(null) }
     val creditPacks = rememberUpdatedState(state.creditPacks)
     val taskLists = rememberUpdatedState(state.taskLists)
     val pointsBills = rememberUpdatedState(state.pointsBills)
@@ -136,6 +139,9 @@ fun ProviderDetailScreen(
         ProviderUiActions(
             // 登录一律交给系统浏览器：本机 WebView 渲染异常（整页缩放错乱、输入框文字镜像），
             // 网关会在本地临时监听回调端口接住登录结果。
+            onOpenSubPage = { page ->
+                if (page is SubPage.ProviderTaskCenter) taskCenterUid = page.uid
+            },
             onWebLogin = { id, region -> viewModel.beginBrowserLogin(id, region) },
             onInAppLogin = { id, region ->
                 // 取登录目标（含要拦截的回调前缀）后立刻拉起 WebView。
@@ -217,16 +223,24 @@ fun ProviderDetailScreen(
         )
     }
 
+    // 任务中心复用同一个 PageScaffold：只换抬头内容，避免出现「双抬头」
+    val inTaskCenter = taskCenterUid != null
     PageScaffold(
-        title = info?.displayName ?: providerId,
-        subtitle = "${accounts.size} 个账号 · 可用 ${accounts.count { it.usable }}",
+        title = if (inTaskCenter) "任务中心" else (info?.displayName ?: providerId),
+        subtitle = if (inTaskCenter) {
+            // 账号昵称可能为空：回退到缩短后的 uid，别把 36 位 UUID 整个铺在标题下
+            accounts.firstOrNull { it.uid == taskCenterUid }
+                ?.let { it.nickname.ifEmpty { shortAccountId(it.uid) } } ?: ""
+        } else {
+            "${accounts.size} 个账号 · 可用 ${accounts.count { it.usable }}"
+        },
         leading = {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "返回",
                 tint = MaterialTheme.colorScheme.onBackground,
                 modifier = Modifier
-                    .clickable(onClick = onBack)
+                    .clickable { if (inTaskCenter) taskCenterUid = null else onBack() }
                     .padding(6.dp),
             )
         },
@@ -243,6 +257,15 @@ fun ProviderDetailScreen(
             }
         },
     ) {
+        val openUid = taskCenterUid
+        if (openUid != null) {
+            // 任务中心：整页替换详情内容，返回时回到供应商详情
+            ProviderTaskCenterScreen(
+                providerId = providerId,
+                uid = openUid,
+                actions = actions,
+            )
+        } else {
         // LoginEntry 自带卡片，这里不再包一层，避免双层卡片
         ui.LoginEntry(accounts, actions)
 
@@ -259,6 +282,7 @@ fun ProviderDetailScreen(
 
         ui.SettingsSection(viewModel.providerSettings(providerId)) { updated ->
             viewModel.updateProviderSettings(providerId, updated)
+        }
         }
     }
 }

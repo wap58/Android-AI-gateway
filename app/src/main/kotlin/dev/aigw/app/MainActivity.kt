@@ -291,6 +291,9 @@ private fun AppRoot(viewModel: AppViewModel, state: AppUiState) {
                 SubPage.AccountTransfer -> AccountTransferScreen(state, viewModel) { subPage = null }
                 SubPage.FreeModels -> FreeModelsScreen(state, onBack = { subPage = null }, onOpenModel = { id -> subPage = SubPage.Models(id) })
                 SubPage.TaskCenter -> TaskCenterScreen(state, viewModel) { subPage = null }
+                // 账号任务明细由供应商详情内部用局部状态渲染（那里才有 ProviderUiActions），
+                // 走到这里说明是异常路径，直接把用户退回上一页。
+                is SubPage.ProviderTaskCenter -> subPage = null
                 SubPage.CreditCenter -> CreditCenterScreen(
                     state = state,
                     onOpen = { subPage = SubPage.ProviderCredits(it) },

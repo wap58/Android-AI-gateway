@@ -1,6 +1,7 @@
 package dev.aigw.app.ui.providers
 
 import androidx.compose.runtime.Composable
+import dev.aigw.app.ui.SubPage
 import androidx.compose.ui.Modifier
 import com.google.gson.JsonObject
 import dev.aigw.core.gateway.ProviderSettings
@@ -70,6 +71,12 @@ class ProviderUiActions(
     val onRefreshCredits: (providerId: String, uid: String?) -> Unit = { _, _ -> },
     /** 执行供应商专属动作（签到、兑换码等）。 */
     val onAction: (providerId: String, uid: String, action: String, payload: JsonObject) -> Unit = { _, _, _, _ -> },
+    /**
+     * 跳转到指定子页面（供应商详情内部用）。
+     *
+     * 用途：把「任务中心」这类长列表搬到独立页，账号卡里只留一个入口。
+     */
+    val onOpenSubPage: (SubPage) -> Unit = {},
     val onToggleAccount: (providerId: String, uid: String, enabled: Boolean) -> Unit = { _, _, _ -> },
     /** 调整账号使用顺序（上移/下移一位）。 */
     val onMoveAccountPriority: (providerId: String, uid: String, up: Boolean) -> Unit = { _, _, _ -> },

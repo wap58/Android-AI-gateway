@@ -30,6 +30,10 @@ internal class CodeBuddyAutoTask(
 
     data class Outcome(val code: String, val title: String, val ok: Boolean, val detail: String)
 
+    /** 技能分享渠道创建（open-platform 域，绝对 URL）。 */
+    private val SKILL_SHARE_CHANNEL_URL =
+        "https://open.workbuddy.cn/api/v2/open-platform/asset-shares/c2c/channels"
+
     private class Action(val code: String, val desc: String, val attempt: Boolean = false,
                          val run: (ProviderTask) -> String)
 
@@ -114,6 +118,229 @@ internal class CodeBuddyAutoTask(
         }
         return sb.append('}').toString()
     }
+
+    // ---------------------------------------------------------------- 小程序链式任务
+    //
+    // 这批任务（Sequential_Tasks_1~6）的判据都在**小程序埋点域**：
+    // POST https://www.codebuddy.cn/v2/report，事件带小程序指纹（agentName=mp）。
+    // 走桌面或 web 域上报一律不认，所以必须单开一条 mp 通道。
+    //
+    // 对齐参考实现 `mp_chat_event` / `mp_expert_use_events` / `mp_model_chat_event`。
+
+    /** 小程序指纹事件公共体。 */
+    private fun mpEnvelope(): MutableMap<String, Any> = mutableMapOf(
+        "timestamp" to System.currentTimeMillis(),
+        "reportDelay" to 0,
+        "userId" to uid,
+        "userNickname" to nickname,
+        "ideName" to "wx_app_cloud",
+        "ideType" to "wx_app_cloud",
+        "machineId" to deriveId("mpmachine"),
+        "sessionId" to deriveId("mpsession"),
+        "mode" to "CLOUD",
+        "os" to "Android",
+        "arch" to "arm64",
+        "osVersion" to "13",
+        "timezone" to "Asia/Shanghai",
+        "product" to "SaaS",
+    )
+
+    /** 一条小程序 chat_request_send 事件（每次独立 conversationId）。 */
+    private fun mpChatEvent(model: Pair<String, String>? = null): MutableMap<String, Any> {
+        val conv = uuid4()
+        val rid = uuid4().replace("-", "")
+        val ev = mpEnvelope()
+        ev.putAll(mapOf(
+            "eventCode" to "chat_request_send",
+            "mode" to "chat",
+            "inputLength" to 12,
+            "isPlan" to false,
+            "isAutoExecuteTerminal" to false,
+            "isAutoModify" to false,
+            "codebaseEnable" to false,
+            "maxToken" to 0, "maxSteps" to 500, "temperature" to 0, "maxRetries" to 0,
+            "mentionContexts" to listOf<Any>(), "knowledgeId" to listOf<Any>(),
+            "knowledgeName" to listOf<Any>(),
+            "codebaseId" to "", "mentionContextCount" to 0, "command" to "",
+            "recommendId" to "", "skillId" to "", "skillCount" to 0, "totalCount" to 0,
+            "requestId" to rid, "traceId" to rid, "rootRequestId" to rid,
+            "parentConversationId" to conv, "conversationId" to conv,
+            "messageId" to "msg-" + rid.takeLast(8),
+            "agentName" to "mp", "agentType" to "main",
+            "codebuddy.session_id" to conv,
+            "codebuddy.conversation_request_id" to rid,
+        ))
+        if (model != null) {
+            ev["requestModelId"] = model.first
+            ev["requestModelName"] = model.second
+        }
+        return ev
+    }
+
+    /** 向 mp 域上报一批事件。 */
+    private fun reportMp(vararg events: Map<String, Any>) {
+        val arr = events.joinToString(",", "[", "]") { toJson(it) }
+        val (status, text) = post("/v2/report", arr, "mp")
+        if (status !in 200..299) throw IllegalStateException("mp 上报失败 HTTP $status: ${text.take(80)}")
+    }
+
+    /** 按需要补发 N 条对话事件（进度由 reload 决定补多少，这里只管发）。 */
+    private fun mpChat(t: ProviderTask, n: Int): String {
+        val need = maxOf(1, (t.target - t.current).toInt().coerceAtMost(n))
+        var sent = 0
+        repeat(need) { i ->
+            if (i > 0) Thread.sleep(1200)
+            runCatching { reportMp(mpChatEvent()) }.onFailure {
+                if (sent == 0) throw it
+            }.onSuccess { sent++ }
+        }
+        return "已上报 $sent 条小程序对话事件"
+    }
+
+    /** Sequential_Tasks_2：小程序专家对话（4 事件链）。 */
+    private fun mpExpertChat(t: ProviderTask): String {
+        val expertId = "WorkspaceBuilder"
+        val expertName = "工作台搭建师"
+        val conv = uuid4()
+        val rid = uuid4().replace("-", "")
+        fun base() = mpEnvelope()
+        val click = base().apply {
+            putAll(mapOf("eventCode" to "expert_summon_click", "id" to expertId,
+                "name" to expertId, "expertTitle" to expertName, "type" to "assistant", "position" to 0))
+        }
+        val summoned = base().apply {
+            putAll(mapOf("eventCode" to "expert_summoned", "id" to expertId,
+                "name" to expertId, "expertTitle" to expertName))
+        }
+        val used = base().apply {
+            putAll(mapOf("eventCode" to "expert_actual_use", "id" to expertId,
+                "name" to expertId, "expertTitle" to expertName, "type" to "assistant",
+                "characterCount" to 14, "expertType" to "builtin"))
+        }
+        val chat = base().apply {
+            putAll(mapOf(
+                "eventCode" to "chat_request_send", "inputLength" to 14,
+                "isPlan" to false, "isAutoExecuteTerminal" to false, "isAutoModify" to false,
+                "codebaseEnable" to false, "maxToken" to 0, "maxSteps" to 500,
+                "temperature" to 0, "maxRetries" to 0,
+                "mentionContexts" to listOf<Any>(), "knowledgeId" to listOf<Any>(),
+                "knowledgeName" to listOf<Any>(), "codebaseId" to "",
+                "mentionContextCount" to 0, "command" to "",
+                "recommendId" to "", "skillId" to "", "skillCount" to 0, "totalCount" to 0,
+                "traceId" to rid, "rootRequestId" to rid,
+                "parentConversationId" to conv, "conversationId" to conv,
+                "messageId" to "msg-" + rid.takeLast(8),
+                "agentName" to "mp", "agentType" to "main",
+                "expertId" to expertId, "expertName" to expertName,
+                "codebuddy.session_id" to conv,
+                "codebuddy.conversation_request_id" to rid,
+            ))
+        }
+        reportMp(click, summoned, used, chat)
+        return "已上报专家召唤+对话事件链"
+    }
+
+    /** Sequential_Tasks_4：小程序定时任务创建。 */
+    private fun mpAutomation(t: ProviderTask): String {
+        val ev = mpEnvelope().apply {
+            putAll(mapOf(
+                "eventCode" to "automated_task_create_suc",
+                "agentName" to "mp",
+                "taskName" to "每日提醒",
+                "isSuccessful" to true,
+            ))
+        }
+        reportMp(ev)
+        return "已上报小程序定时任务创建事件"
+    }
+
+    /** Sequential_Tasks_5：小程序里用 GLM-5.2 对话一次。 */
+    private fun mpModelChat(t: ProviderTask): String {
+        reportMp(mpChatEvent("glm-5.2" to "GLM-5.2"))
+        return "已上报 GLM-5.2 模型对话事件"
+    }
+
+    /**
+     * skill_share：分享一个市场技能给好友。
+     *
+     * 三步（对齐参考实现 `t_skill_share`）：
+     *   1. 拉市场技能列表挑一个可分享的
+     *   2. POST asset-share 创建**真实**分享渠道，拿 channel_id
+     *   3. 向 mp 域上报 `skill_share_channel_action`（判据：wechat + success + channel_id）
+     *
+     * 上游只认「真渠道 + 真事件」，没有 channel_id 的裸事件不推进进度。
+     */
+    private fun skillShare(t: ProviderTask): String {
+        // 1) 市场技能
+        val (ls, lb) = post("/v2/operation-platform/market/skill/list",
+            """{"page":1,"page_size":20}""", "mp")
+        if (ls !in 200..299) throw IllegalStateException("技能市场 HTTP $ls: ${lb.take(80)}")
+        val root = runCatching { com.google.gson.JsonParser.parseString(lb).asJsonObject }.getOrNull()
+            ?: throw IllegalStateException("技能市场返回非 JSON")
+        val skills = root.getAsJsonObject("data")?.getAsJsonArray("skills")
+            ?: throw IllegalStateException("技能列表为空")
+        var skillId = ""
+        var skillName = ""
+        for (el in skills) {
+            val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val sid = o.str("skill_id").ifEmpty { o.str("id") }
+            if (sid.isEmpty()) continue
+            val nm = o.str("display_name_zh").ifEmpty { o.str("name") }
+                .ifEmpty { o.str("display_name_en") }
+            if (nm.isEmpty()) continue
+            skillId = sid; skillName = nm
+            break
+        }
+        if (skillId.isEmpty()) throw IllegalStateException("没有可分享的市场技能")
+
+        // 2) 创建分享渠道
+        val shareBody = com.google.gson.JsonObject().apply {
+            addProperty("asset_kind", "skill")
+            addProperty("asset_source", "market")
+            addProperty("asset_ref", """{"asset_id":"$skillId"}""")
+            add("ways", com.google.gson.JsonArray().apply {
+                add("link"); add("wxacode"); add("wxapath")
+            })
+            add("extra", com.google.gson.JsonObject().apply {
+                addProperty("name", skillName)
+                addProperty("description", "")
+                addProperty("shareKey", skillId)
+                addProperty("marketplaceSource", "builtin-market")
+            })
+        }
+        // 渠道创建在 open-platform 域，是**绝对路径**，不能拼 mp 的相对路径
+        val (cs, cb) = post(SKILL_SHARE_CHANNEL_URL, shareBody.toString(), "abs")
+        if (cs !in 200..299) throw IllegalStateException("创建分享渠道 HTTP $cs: ${cb.take(80)}")
+        val cRoot = runCatching { com.google.gson.JsonParser.parseString(cb).asJsonObject }.getOrNull()
+        val cData = cRoot?.getAsJsonObject("data")
+        val channelId = cData?.str("channel_id").orEmpty()
+            .ifEmpty { cData?.str("channelId").orEmpty() }
+            .ifEmpty { cData?.str("id").orEmpty() }
+        if (channelId.isEmpty()) throw IllegalStateException("上游未返回 channel_id")
+
+        // 3) 上报渠道事件
+        val now = System.currentTimeMillis()
+        val ev = mpEnvelope().apply {
+            putAll(mapOf(
+                "eventCode" to "skill_share_channel_action",
+                "skillId" to skillId, "skillName" to skillName,
+                "skillType" to "market", "skillSource" to "market",
+                "action" to "wechat", "panelAction" to "success",
+                "panelType" to "mini_program_card",
+                "isSuccessful" to true, "cost" to 0,
+                "id" to channelId, "actionAt" to now,
+                "entry" to "skill_detail", "status" to "safe",
+                "actionSuccessful" to true,
+            ))
+        }
+        reportMp(ev)
+        return "已分享技能「$skillName」（渠道 $channelId）"
+    }
+
+    private fun com.google.gson.JsonObject.str(k: String): String =
+        runCatching { get(k)?.takeIf { it.isJsonPrimitive }?.asString ?: "" }.getOrDefault("")
+
+    private fun uuid4(): String = java.util.UUID.randomUUID().toString()
 
     fun runAll(tasks: List<ProviderTask>): List<Outcome> {
         val out = ArrayList<Outcome>()
@@ -211,6 +438,15 @@ internal class CodeBuddyAutoTask(
         Action("Expert_team_use_3", "召唤 3 次专家团") { teamSummon(it) },
         Action("black_cat", "夜猫子对话", attempt = true) { blackCat(it) },
         Action("create_canvas", "设计创意画布", attempt = true) { createCanvas(it) },
+        // 小程序链式任务：判据是小程序指纹的 chat_request_send，走 mp 通道（www.codebuddy.cn）
+        Action("Sequential_Tasks_1", "小程序对话 ×1", attempt = true) { mpChat(it, 1) },
+        Action("Sequential_Tasks_3", "小程序对话 ×5", attempt = true) { mpChat(it, 5) },
+        Action("Sequential_Tasks_6", "小程序对话 ×10", attempt = true) { mpChat(it, 10) },
+        Action("Sequential_Tasks_2", "小程序专家对话", attempt = true) { mpExpertChat(it) },
+        Action("Sequential_Tasks_4", "小程序定时任务", attempt = true) { mpAutomation(it) },
+        Action("Sequential_Tasks_5", "小程序 GLM5.2", attempt = true) { mpModelChat(it) },
+        // 分享技能：创建真实 asset-share 渠道 → 上报渠道事件（判据 wechat+success+channel_id）
+        Action("skill_share", "分享技能给好友", attempt = true) { skillShare(it) },
     )
 
     /**

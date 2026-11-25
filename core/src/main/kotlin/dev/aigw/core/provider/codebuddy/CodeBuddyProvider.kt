@@ -267,7 +267,28 @@ class CodeBuddyProvider(
             }
         }
         return when (action) {
-            ACTION_CHECKIN -> checkin(account)
+            ACTION_CHECKIN -> {
+                val result = checkin(account)
+                // ★ 签到之外必须再点亮一次「今日活跃」，否则活跃地图永远断。
+                //
+                //   活跃地图/连登日历的判据是 `POST /v2/report` 的 `chat_request_send`
+                //   事件，**签到接口（daily-checkin）完全不产生这个事件**。之前自动签到
+                //   只跑 checkin，于是连续签到天数一直是 1 天（用户截图：11 月只点亮了
+                //   零星几天，7/14/28 档位全部兑不了）。
+                //
+                //   这里只做「上报 + 回读自检」这一小步（约 15 秒），完整的成长链
+                //   （任务中心事件链、领养、补签、兑奖、旅行）仍由 ACTION_TASKS 负责——
+                //   那套要跑好几分钟，不该压在自动签到里。
+                //   上报本身幂等 + 内存日锁，重复触发不会重复轰炸。
+                if (!result.ok || credential == null) return result
+                val extra = ArrayList<String>()
+                val streak = runCatching { activeReport(credential, extra) }.getOrNull()
+                if (extra.isEmpty()) return result
+                return result.copy(
+                    message = result.message + "；" + extra.joinToString("；"),
+                    streak = streak?.toInt() ?: result.streak,
+                )
+            }
             ACTION_TASKS -> growth(account)
             else -> ProviderActionResult.unsupported(action)
         }
@@ -288,12 +309,22 @@ class CodeBuddyProvider(
         val headers = billingHeaders(credential)
         val parts = ArrayList<String>()
 
-        // ★ 先做「完成类」任务（上报/对话/事件链），再走领取链。
-        //   顺序反了的话，任务还没达标，领取必然拿不到奖励。
+        // ★★ 第一步必须是「活跃上报点亮连登」。
+        //
+        //   活跃地图（11月活跃地图 / 连登日历）的判据是 `POST /v2/report` 上的单条
+        //   `chat_request_send` + userId 必填——**不是**任务中心的事件链。缺了这一步，
+        //   后面补签/兑奖全都没东西可补、没档位可兑，连登永远断在 1 天。
+        //   顺序也不能挪：先点亮当天格子，再补签才有「昨天→今天」的连续。
+        val reported = activeReport(credential, parts)
+
+        // 任务中心的「完成类」事件链（桌面指纹 6 事件），点亮任务而非活跃格。
         runAutoTasks(credential, parts)
 
         claimGiftAndCompensation(credential, base, headers, parts)
-        adoptBuddy(credential, base, headers, parts)
+        // 刚发满活跃上报 → chat_5 门槛可能刚好达成，豁免当日领养防抖
+        adoptBuddy(credential, base, headers, parts, force = reported != null)
+        // 先补签再兑奖：连登天数上去了，高档次兑换才够格
+        makeupStreak(credential, parts)
         redeemStreak(credential, base, headers, parts)
         drawLottery(credential, base, headers, parts)
         claimTravel(credential, base, headers, parts)
@@ -306,6 +337,70 @@ class CodeBuddyProvider(
         return ProviderActionResult.success(
             if (parts.isEmpty()) "没有可完成或可领取的任务" else parts.joinToString("；"),
         )
+    }
+
+    /**
+     * 活跃上报：点亮当日活跃格（连登日历）+ 累加 chat_5 对话进度。
+     *
+     * 移植自反代 `internal/scheduler/growth.go` 的 `stepReports` + `stepStreakCheck`：
+     *  1. 发 [REPORTS_PER_DAY] 条 `chat_request_send`（同会话、独立 requestId、间隔 1.5s）
+     *  2. 回读 `streak.days` 做自检——上报**回 200 不代表计入**，上游会静默丢弃
+     *  3. days==0 明说"疑似静默丢弃"，别让用户以为成功了
+     *
+     * 日锁：同一天只跑一轮。成长链可能被多次触发（定时 + 手动 + 启动补跑），
+     * 不锁的话每轮都发 10 条事件，半小时内就上百条，风控必中。
+     */
+    private fun activeReport(credential: Credential, parts: MutableList<String>): Long? {
+        val uid = credential.uid
+        val today = shanghaiDateKey(nowMillis())
+        if (activeReportedOn[uid] == today) {
+            parts.add("活跃上报今日已完成")
+            return null
+        }
+        return runCatching {
+            val base = chatBase(credential)
+            val headers = billingHeaders(credential)
+            val reporter = CodeBuddyActiveReport(
+                uid = uid,
+                nickname = credential.nickname,
+                post = { path, body -> postJson("$base$path", credential, body, headers) },
+                now = nowMillis,
+            )
+            val result = reporter.report(REPORTS_PER_DAY)
+            parts.add(result.describe())
+            if (!result.full) {
+                // 没发满就不回读：进度必然没到，回读只会白打一次接口
+                hooks.onLog("CodeBuddy 活跃上报未完成：${result.describe()}")
+                return@runCatching null
+            }
+            // 占位放在发满之后：中途失败允许下一次触发重试（幂等，服务端去重）
+            activeReportedOn[uid] = today
+
+            // 自检：回读连登天数。回 200 但 days 不涨 = 上游静默丢弃，必须告诉用户。
+            val (ss, sb) = getJson("$base$PATH_GROWTH/streak", headers)
+            if (ss !in 200..299) return@runCatching null
+            val streak = jsonOf(sb)?.let { dataOrRoot(it) }
+                ?.objOrNull("streak")?.longOrNull("days") ?: return@runCatching null
+            parts.add("连登 $streak 天")
+            if (streak == 0L) {
+                parts.add("⚠ 上报成功但连登仍为 0，疑似被上游静默丢弃")
+                hooks.onLog("CodeBuddy 活跃上报回 200 但 streak.days=0（静默丢弃）")
+            }
+            streak
+        }.getOrElse { e ->
+            parts.add("活跃上报失败：" + (e.message ?: e.javaClass.simpleName))
+            null
+        }
+    }
+
+    /** 活跃上报的日锁：key = uid，value = 已上报的上海日期。 */
+    private val activeReportedOn = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** 上海时区日期键（上游按 CST 切自然日，用本地时区会跨日误判）。 */
+    private fun shanghaiDateKey(millis: Long): String {
+        val fmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+        fmt.timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+        return fmt.format(java.util.Date(millis))
     }
 
     /**
@@ -324,6 +419,10 @@ class CodeBuddyProvider(
             fun doPost(path: String, body: String, mode: String): Pair<Int, String> = when (mode) {
                 "desktop" -> postJson("$bill$path", credential, body, desktopHeaders(credential, bill))
                 "web" -> postJson("${webBase(credential)}$path", credential, body, webHeaders(credential))
+                // mp = 小程序形态：小程序链式任务（Sequential_Tasks_*）只认这个域和这套指纹
+                "mp" -> postJson("$CBDOMAIN$path", credential, body, mpHeaders(credential))
+                // abs = 传入的就是完整 URL（技能分享渠道这类跨域接口），头用桌面族
+                "abs" -> postJson(path, credential, body, desktopHeaders(credential, bill))
                 else -> postJson("$bill$path", credential, body, billingHeaders(credential))
             }
 
@@ -441,9 +540,18 @@ class CodeBuddyProvider(
         base: String,
         headers: Map<String, String>,
         parts: MutableList<String>,
+        force: Boolean = false,
     ): Boolean {
         var ok = false
         val root = chatBase(credential)
+        val uid = credential.uid
+        // 日防抖：门槛（chat_5）未达时，当天不再反复重试。
+        // 反代 `stepAdopt` 同款语义——每次 growth 都回 403 只会白白拉高请求频率。
+        // force=true 用于「本轮刚发满活跃上报」这种确知门槛已变的场景。
+        val today = shanghaiDateKey(nowMillis())
+        if (!force && adoptTriedOn[uid] == today) {
+            return false
+        }
         runCatching {
             val (infoStatus, infoBody) = getJson("$root$PATH_GROWTH/buddy/info", headers)
             if (infoStatus !in 200..299) return@runCatching
@@ -461,16 +569,115 @@ class CodeBuddyProvider(
                 val credit = jsonOf(body)?.firstNumber("credit", "reward_credit")
                 parts.add(if (credit != null) "领养 Buddy +$credit" else "领养 Buddy")
                 ok = true
+            } else if (body.contains("task not completed") || body.contains("10001")) {
+                // 门槛未达（chat_5 没满）：当天不再重试，等下一轮活跃上报补足
+                adoptTriedOn[uid] = today
+                parts.add("领养待解锁（对话次数未达）")
             }
         }
         return ok
     }
+
+    /** 领养日防抖：key = uid，value = 已尝试的上海日期。 */
+    private val adoptTriedOn = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
      * 连登档位兑奖：查连登状态，对**已达标但未领取**的档位调 redeem。
      *
      * 档位固定 `7d` / `14d` / `28d`；每次请求要带一个全新的小写 UUIDv4 作为幂等键。
      */
+    /**
+     * 补签：用补签卡把本月的漏签补上，保住连登天数。
+     *
+     * 连登档位是 7d / 14d / 28d，漏一天就从当前天数重新算，
+     * 所以补签的价值在「断签前保住进度」而不是直接给积分。
+     *
+     * 判定（对齐参考实现，口径全部来自服务端，不做本地推断）：
+     *   1. `/activity/growth/streak` 拿 make_up_cards.balance 与 makeup_dates（已补过的）
+     *   2. `/activity/growth/heatmap` 拿本月每日 score；score==0 且早于今天 = 漏签
+     *   3. 补签卡 > 0 才提交，上限 1 张/轮（多发会被上游判异常）
+     *   4. `POST /activity/growth/makeup-cards/use {target_date}`，成功后再回读 streak
+     */
+    private fun makeupStreak(credential: Credential, parts: MutableList<String>) {
+        runCatching {
+            val root = chatBase(credential)
+            val headers = billingHeaders(credential)
+
+            val (ss, sb) = getJson("$root/activity/growth/streak", headers)
+            if (ss !in 200..299) return@runCatching
+            val sObj = jsonOf(sb)?.let { dataOrRoot(it) } ?: return@runCatching
+
+            val cards = sObj.objOrNull("makeup_cards")
+            val balance = cards?.longOrNull("balance")
+                ?: sObj.longOrNull("makeup_card_count") ?: 0L
+            if (balance <= 0L) return@runCatching
+
+            // 已补过的日期：不重复提交
+            val done = HashSet<String>()
+            sObj.objOrNull("streak")?.getAsJsonArray("makeup_dates")?.forEach {
+                runCatching { done.add(it.asString) }
+            }
+
+            val (hs, hb) = getJson("$root/activity/growth/heatmap", headers)
+            if (hs !in 200..299) return@runCatching
+            val hObj = jsonOf(hb)?.let { dataOrRoot(it) } ?: return@runCatching
+
+            // 今天（服务端给，没有就用本地日期）
+            val todayStr = (hObj.objOrNull("today")?.str("date").orEmpty())
+                .ifEmpty { hObj.str("today") }
+                .ifEmpty { java.time.LocalDate.now().toString() }
+            val today = runCatching { java.time.LocalDate.parse(todayStr) }.getOrNull()
+                ?: return@runCatching
+
+            // 可补范围：本月 1 号 ~ 昨天
+            val monthStart = today.withDayOfMonth(1)
+            val yesterday = today.minusDays(1)
+            val cells = hObj.getAsJsonArray("cells") ?: return@runCatching
+            val missing = ArrayList<String>()
+            for (el in cells) {
+                val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val ds = o.str("date")
+                if (ds.isEmpty()) continue
+                val day = runCatching { java.time.LocalDate.parse(ds) }.getOrNull() ?: continue
+                if (day < monthStart || !day.isBefore(today)) continue
+                val score = o.longOrNull("score") ?: 0L
+                if (score == 0L && ds !in done) missing.add(ds)
+            }
+            if (missing.isEmpty()) return@runCatching
+
+            // ★ 排序口径：昨天优先，其余由近及远。
+            //
+            //   连登是按「连续」算的，缺的那天只要在昨天，今天一签就是一串；
+            //   但如果昨天已经补上、前天还缺，链条仍然断着——所以补签要贪心地把
+            //   「今天往前连续的一段空洞」全填掉，而不是只补一张就收工。
+            //   反代那边每天只补昨天一张（它的 cron 每天跑），我们可能一天才跑一轮，
+            //   所以这里按余额尽量多补，但单轮仍设上限（同作者备注：多发会被判异常）。
+            val yStr = yesterday.toString()
+            missing.sortWith(compareByDescending<String> { it == yStr }.thenByDescending { it })
+
+            val useCount = minOf(balance, MAX_MAKEUP_PER_ROUND.toLong(), missing.size.toLong()).toInt()
+            var repaired = 0
+            for (date in missing.take(useCount)) {
+                val (rs, _) = postJson(
+                    "$root/activity/growth/makeup-cards/use",
+                    credential,
+                    """{"target_date":"$date"}""",
+                    headers,
+                )
+                if (rs in 200..299) repaired++ else break
+            }
+            if (repaired > 0) {
+                val (ns, nb) = getJson("$root/activity/growth/streak", headers)
+                val days = if (ns in 200..299) {
+                    jsonOf(nb)?.let { dataOrRoot(it) }?.objOrNull("streak")?.longOrNull("days")
+                } else null
+                parts.add(
+                    if (days != null) "补签 $repaired 天（连签 $days 天）" else "补签 $repaired 天",
+                )
+            }
+        }
+    }
+
     private fun redeemStreak(
         credential: Credential,
         base: String,
@@ -879,11 +1086,25 @@ class CodeBuddyProvider(
         // 企业账号没有个人成长体系，不发请求（上游会回 403/10001）
         if (credential.enterpriseId.isNotEmpty()) return ProviderTaskListView(emptyList())
         return try {
-            val (status, body) = getJson("${chatBase(credential)}$PATH_GROWTH/tasks", billingHeaders(credential))
+            // ★ 双口径合并（关键）：上游按「端」分流下发任务，两套**互有交集但不是包含关系**
+            //   （实测：默认口径有 Library_read / skill_share，小程序口径没有；
+            //    小程序口径有 Sequential_Tasks_* / school_season，默认口径没有）。
+            //   所以必须两个口径都拉、按 task_code 合并去重，否则任务中心永远只剩五六条。
+            // ★ 三源任务发现（对齐参考实现）：三个接口的任务清单**互不为超集**，
+            //   必须全部拉取再按 task_code 合并，否则会漏掉整整一批任务：
+            //     1. 桌面   /v2/activity/growth/tasks        （基础任务）
+            //     2. 小程序 /v2/activity/growth/tasks + X-Client-Platform: miniprogram
+            //     3. 等级族 /activity/growth/tasks           （**没有 /v2 前缀**，first_chat 等）
+            val base = chatBase(credential)
+            val url = "$base$PATH_GROWTH/tasks"
+            val defaultResp = getJson(url, billingHeaders(credential))
+            val mpResp = getJson(url, taskListHeaders(credential))
+            val levelResp = getJson("$base/activity/growth/tasks", billingHeaders(credential))
+            val (status, body) = if (defaultResp.first in 200..299) defaultResp else mpResp
             if (status !in 200..299) {
                 return ProviderTaskListView(
                     emptyList(),
-                    error = failure("成长中心", endpoint(credential), "${chatBase(credential)}$PATH_GROWTH/tasks", status, body),
+                    error = failure("成长中心", endpoint(credential), url, status, body),
                 )
             }
             val root = jsonOf(body) ?: return ProviderTaskListView(emptyList(), error = "响应不是合法 JSON")
@@ -895,35 +1116,17 @@ class CodeBuddyProvider(
             val inPeriod = obj.get("in_period")?.takeIf { it.isJsonPrimitive }?.asBoolean
             val array = obj.arrayOrNull("tasks")
                 ?: return ProviderTaskListView(emptyList(), inPeriod = inPeriod)
-            val tasks = array.mapNotNull { element ->
-                val task = runCatching { element.asJsonObject }.getOrNull() ?: return@mapNotNull null
-                val code = task.firstString("task_code")
-                if (code.isEmpty()) return@mapNotNull null
-                // 进度既可能在顶层 current/target，也可能藏在 progress 对象里，后者优先
-                var current = task.firstLong("current")
-                var target = task.firstLong("target")
-                task.objOrNull("progress")?.let { progress ->
-                    val pc = progress.firstLong("current")
-                    val pt = progress.firstLong("target")
-                    if (pt > 0 || pc > 0) {
-                        current = pc
-                        target = pt
-                    }
-                }
-                val acceptStatus = task.firstString("accept_status")
-                ProviderTask(
-                    code = code,
-                    title = task.firstString("title").ifEmpty { code },
-                    description = task.firstString("description"),
-                    current = current,
-                    target = target,
-                    status = acceptStatus,
-                    locked = task.get("locked")?.asBoolean ?: false,
-                    claimed = acceptStatus == "claimed",
-                    rewardCredit = task.firstLong("reward_credit"),
-                )
-            }
-            ProviderTaskListView(tasks, inPeriod = inPeriod)
+            val tasks = array.mapNotNull { element -> parseTask(element) }
+            // 合并小程序口径：两套互有交集，按 task_code 去重（默认口径优先，
+            // 因为它的 accept_status 更准；mp 独有的任务补在后面）。
+            val merged = LinkedHashMap<String, ProviderTask>()
+            tasks.forEach { merged[it.code] = it }
+            val mpTasks = parseTaskArray(mpResp.second)
+            mpTasks.forEach { if (!merged.containsKey(it.code)) merged[it.code] = it }
+            // 第三源：等级族（无 /v2）
+            val levelTasks = parseTaskArray(levelResp.second)
+            levelTasks.forEach { if (!merged.containsKey(it.code)) merged[it.code] = it }
+            ProviderTaskListView(merged.values.toList(), inPeriod = inPeriod)
         } catch (e: Exception) {
             ProviderTaskListView(emptyList(), error = e.message ?: "拉取任务列表失败")
         }
@@ -1397,6 +1600,54 @@ class CodeBuddyProvider(
         putAll(endpoint(credential).extraHeaders)
     }
 
+    /**
+     * 任务列表专用头：在 billing 基础上叠加 `X-Client-Platform: miniprogram`。
+     *
+     * 上游对任务下发做了端分流：默认口径只有基础任务（五六条），
+     * 小程序口径是**超集**，多出 Sequential_Tasks_*、school_season 等。
+     * accept / claim 也要求同款头（缺头会返回 task not found）。
+     */
+    /** 解析单个任务条目（两个口径共用同一套字段）。 */
+    private fun parseTask(element: com.google.gson.JsonElement): ProviderTask? {
+        val task = runCatching { element.asJsonObject }.getOrNull() ?: return null
+        val code = task.firstString("task_code")
+        if (code.isEmpty()) return null
+        // 进度既可能在顶层 current/target，也可能藏在 progress 对象里，后者优先
+        var current = task.firstLong("current")
+        var target = task.firstLong("target")
+        task.objOrNull("progress")?.let { progress ->
+            val pc = progress.firstLong("current")
+            val pt = progress.firstLong("target")
+            if (pt > 0 || pc > 0) {
+                current = pc
+                target = pt
+            }
+        }
+        val acceptStatus = task.firstString("accept_status")
+        return ProviderTask(
+            code = code,
+            title = task.firstString("title").ifEmpty { code },
+            description = task.firstString("description"),
+            current = current,
+            target = target,
+            status = acceptStatus,
+            locked = task.get("locked")?.asBoolean ?: false,
+            claimed = acceptStatus == "claimed",
+            rewardCredit = task.firstLong("reward_credit"),
+        )
+    }
+
+    /** 从任务列表响应原文里解析出全部任务（口径无关）。 */
+    private fun parseTaskArray(body: String): List<ProviderTask> {
+        val root = jsonOf(body) ?: return emptyList()
+        val obj = dataOrRoot(root)
+        val arr = obj.arrayOrNull("tasks") ?: return emptyList()
+        return arr.mapNotNull { parseTask(it) }
+    }
+
+    private fun taskListHeaders(credential: Credential): Map<String, String> =
+        billingHeaders(credential) + mapOf("X-Client-Platform" to "miniprogram")
+
     private fun billingHeaders(credential: Credential): Map<String, String> = buildMap {
         put("Authorization", "Bearer ${credential.accessToken}")
         put("Accept", "application/json")
@@ -1498,6 +1749,31 @@ class CodeBuddyProvider(
         if (regionOf(credential) == REGION_GLOBAL) "https://www.workbuddy.ai" else "https://www.workbuddy.cn"
 
     /** Web 端请求头（对照浏览器实际请求，成长中心页面来源）。 */
+    /**
+     * 小程序形态请求头：小程序链式任务（Sequential_Tasks_*）与活动埋点走这套。
+     *
+     * 官方小程序固定打 www.codebuddy.cn，Referer 是活动页；带桌面 UA 反而对不上，
+     * 所以这里用小程序 UA（对齐参考实现 `MP_REPORT_HEADERS`）。
+     */
+    private fun mpHeaders(credential: Credential): Map<String, String> = buildMap {
+        put("Authorization", "Bearer " + credential.accessToken)
+        put("Accept", "application/json, text/plain, */*")
+        put("Content-Type", "application/json")
+        put("Origin", CBDOMAIN)
+        put("Referer", CBDOMAIN + "/")
+        put("x-client-platform", "mp")
+        put("User-Agent", MP_UA)
+        credential.uid.takeIf { it.isNotEmpty() }?.let { put("X-User-Id", it) }
+    }
+
+    /** 小程序 / 活动埋点域（与 chat 域 `chatBase` 不同）。 */
+    private val CBDOMAIN = "https://www.codebuddy.cn"
+
+    /** 小程序 UA：微信内置浏览器形状，与桌面 UA 区分开。 */
+    private val MP_UA = "Mozilla/5.0 (Linux; Android 13; Pixel 7 Build/TQ3A.230805.001; wv) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/116.0.0.0 " +
+        "Mobile Safari/537.36 MicroMessenger/8.0.49.2600(0x28003135) WeChat/arm64 Weixin NetType/WIFI"
+
     private fun webHeaders(credential: Credential): Map<String, String> = buildMap {
         put("Authorization", "Bearer " + credential.accessToken)
         put("Accept", "application/json, text/plain, */*")
@@ -1695,6 +1971,24 @@ class CodeBuddyProvider(
 
         /** 抽奖单次最多抽几次（官方客户端有硬上限，这里取一个保守值）。 */
         const val MAX_LOTTERY_DRAWS = 10
+
+        /**
+         * 每日活跃上报条数。
+         *
+         * 与反代 `GrowthReportCount` 默认值一致（10，可配 1~10）。为什么不是 1 条：
+         *  - 一条上报只把当日活跃格 score 加 1，分数太低容易被判敷衍；
+         *  - `chat_5` 任务要求 5 次对话，领养 Buddy 的前置就是它，条数不足领养必失败。
+         * 上限 10 是反代实测的风控边界，超过只会招人机判定。
+         */
+        const val REPORTS_PER_DAY = 10
+
+        /**
+         * 单轮补签上限。
+         *
+         * 反代一天只补昨天 1 张（它每天跑）；天元鼎可能几个小时才触发一轮，
+         * 所以允许一轮多补，但仍设上限：同作者注释写明「多发会被上游判异常」。
+         */
+        const val MAX_MAKEUP_PER_ROUND = 3
 
         /** 官方默认模型（`name = "Auto"`）。 */
         const val DEFAULT_MODEL_ID = "default-model"

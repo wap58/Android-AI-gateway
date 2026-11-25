@@ -70,6 +70,14 @@ class GatewayHttpServer(
                 session.method == NanoHTTPD.Method.OPTIONS -> run { drainBody(session); preflight() }
                 session.method == NanoHTTPD.Method.POST && uri == "/v1/chat/completions" -> chatCompletions(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/models" -> models(session)
+                // 临时：手动触发供应商动作（测试成长任务用，发版前删除）
+                session.method == NanoHTTPD.Method.POST && uri == "/v1/act" -> dbgAction(session)
+                // 临时：看某个账号的成长任务原始清单
+                session.method == NanoHTTPD.Method.GET && uri == "/v1/dbg/tasks" -> dbgTasks(session)
+                // 临时：查小程序活动任务（portal/activity）
+                session.method == NanoHTTPD.Method.GET && uri == "/v1/dbg/campaign" -> dbgCampaign(session)
+                // 临时：看连续签到与补签卡状态
+                session.method == NanoHTTPD.Method.GET && uri == "/v1/dbg/streak" -> dbgStreak(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/v1/credits" || uri == "/credits" || uri == "/v1/v1/credits" -> credits(session)
                 session.method == NanoHTTPD.Method.GET && uri == "/healthz" ->
                     NanoHTTPD.newFixedLengthResponse(SimpleStatus(200, "OK"), "text/plain; charset=utf-8", "ok")
@@ -130,6 +138,105 @@ class GatewayHttpServer(
         return NanoHTTPD.newFixedLengthResponse(
             SimpleStatus(200, "OK"), "text/plain; charset=utf-8", lines,
         )
+    }
+
+    /** 临时诊断：GET /v1/dbg/streak?provider=codebuddy&uid=xxx */
+    private fun dbgStreak(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized(session)
+        val provider = session.parms["provider"].orEmpty()
+        val uid = session.parms["uid"].orEmpty()
+        val acc = engine.account(provider, uid) ?: return json(404, "{\"error\":\"no account\"}")
+        val prov = engine.registry.get(provider) ?: return json(404, "{\"error\":\"no provider\"}")
+        val out = com.google.gson.JsonObject()
+        runCatching {
+            val token = acc.secret.let { sec ->
+                runCatching {
+                    com.google.gson.JsonParser.parseString(sec).asJsonObject
+                        .get("accessToken")?.asString.orEmpty()
+                }.getOrDefault("")
+            }
+            for (path in listOf("streak", "heatmap")) {
+                val c = (java.net.URL("https://www.codebuddy.cn/v2/activity/growth/$path").openConnection()
+                        as java.net.HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 12000
+                    readTimeout = 15000
+                    setRequestProperty("Authorization", "Bearer $token")
+                    setRequestProperty("Accept", "application/json")
+                    setRequestProperty("X-User-Id", uid)
+                }
+                val st = c.responseCode
+                val txt = (if (st in 200..299) c.inputStream else c.errorStream)
+                    ?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
+                out.addProperty(path, "HTTP $st ${txt.take(800)}")
+            }
+        }.onFailure { out.addProperty("error", it.message ?: it.javaClass.simpleName) }
+        return json(200, out.toString())
+    }
+
+    /** 临时诊断：GET /v1/dbg/campaign?provider=codebuddy&uid=xxx&code=campaign_starbucks_2026 */
+    private fun dbgCampaign(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized(session)
+        val code = session.parms["code"].orEmpty()
+        val uid = session.parms["uid"].orEmpty()
+        val camp = if (code.isEmpty()) "campaign_starbucks_2026" else code
+        val url = "https://www.codebuddy.cn/portal/activity/tasks?activity_code=$camp"
+        val conn = (java.net.URL(url).openConnection() as java.net.HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15000
+            readTimeout = 20000
+            setRequestProperty("X-User-Id", uid)
+            setRequestProperty("Accept", "application/json")
+        }
+        return try {
+            val st = conn.responseCode
+            val txt = (if (st in 200..299) conn.inputStream else conn.errorStream)
+                ?.readBytes()?.toString(Charsets.UTF_8).orEmpty()
+            json(200, com.google.gson.JsonObject().apply {
+                addProperty("status", st); addProperty("body", txt.take(2000))
+            }.toString())
+        } catch (e: Exception) {
+            json(200, """{"error":"${e.message}"}""")
+        }
+    }
+
+    /** 临时诊断：GET /v1/dbg/tasks?provider=codebuddy&uid=xxx */
+    private fun dbgTasks(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized(session)
+        val provider = session.parms["provider"].orEmpty()
+        val uid = session.parms["uid"].orEmpty()
+        val acc = engine.account(provider, uid) ?: return json(404, "{\"error\":\"no account\"}")
+        val prov = engine.registry.get(provider) ?: return json(404, "{\"error\":\"no provider\"}")
+        val view = prov.taskList(acc)
+        val obj = com.google.gson.JsonObject()
+        obj.addProperty("error", view?.error.orEmpty())
+        obj.addProperty("inPeriod", view?.inPeriod?.toString() ?: "null")
+        obj.addProperty("count", view?.tasks?.size ?: 0)
+        val arr = com.google.gson.JsonArray()
+        view?.tasks?.forEach { t ->
+            val o = com.google.gson.JsonObject()
+            o.addProperty("code", t.code); o.addProperty("title", t.title)
+            o.addProperty("current", t.current); o.addProperty("target", t.target)
+            o.addProperty("status", t.status); o.addProperty("claimed", t.claimed)
+            o.addProperty("locked", t.locked); o.addProperty("reward", t.rewardCredit)
+            arr.add(o)
+        }
+        obj.add("tasks", arr)
+        return json(200, obj.toString())
+    }
+
+    /** 临时诊断：POST /v1/act?provider=codebuddy&uid=xxx&action=tasks */
+    private fun dbgAction(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
+        if (!authorized(session)) return unauthorized(session)
+        drainBody(session)
+        val provider = session.parms["provider"].orEmpty()
+        val uid = session.parms["uid"].orEmpty()
+        val action = session.parms["action"].orEmpty()
+        val r = engine.performAction(provider, uid, action)
+        val obj = com.google.gson.JsonObject()
+        obj.addProperty("ok", r.ok)
+        obj.addProperty("message", r.message)
+        return json(200, obj.toString())
     }
 
     private fun credits(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response {
@@ -640,10 +747,14 @@ class GatewayHttpServer(
             }
 
             val summary = engine.pool.summary(currentRoute.providerId)
-            val errDetail = if (providerLastError.isEmpty()) {
-                "无可用账号（总数: ${summary.total}，可用: ${summary.usable}，停用: ${summary.disabled}）"
-            } else {
-                providerLastError
+            // 走到这里 providerLastError 可能是空的（如并发闸门全部挡下、反复取号失败但池里仍有号）。
+            // 原先一律写「无可用账号」，与括号里的「可用 N」自相矛盾，改为如实描述。
+            val errDetail = when {
+                providerLastError.isNotEmpty() -> providerLastError
+                summary.usable > 0 ->
+                    "本次未取到账号（总数: ${summary.total}，可用: ${summary.usable}，可能都在途/已试过）"
+                else ->
+                    "无可用账号（总数: ${summary.total}，可用: 0，停用: ${summary.disabled}）"
             }
             routeErrors.add("${currentRoute.providerId}($errDetail)")
 

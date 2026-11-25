@@ -43,8 +43,10 @@ android {
         // 0.1.0：界面文案去英文、应用内更新、请求体上限可配置、自动签到
         // 0.2.0：首个正式稳定版（至此之前的 0.1.1.x 全部撤下）
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
-        versionCode = 200
-        versionName = "1.1.0"
+        // 1.1.0：悬浮底栏、请求改写、AutoClaw 刷新域名修复、记录页胶囊修复、网关行为设置
+        // 1.1.1：修自动签到日锁 scope 错配（每分钟重复签到）+ 弱网失败退避；活跃地图点亮
+        versionCode = 216
+        versionName = "1.1.1"
     }
 
     buildFeatures {

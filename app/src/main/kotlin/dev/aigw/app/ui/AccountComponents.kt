@@ -95,7 +95,7 @@ fun AccountTitleRow(
  * 有些供应商（如 WorkBuddy）登录响应里没有昵称，只能拿 uid 顶替；
  * 一串 36 位 UUID 既撑爆卡片又分不清是哪个号。短 id 保持唯一性的同时可读。
  */
-private fun shortAccountId(uid: String): String {
+fun shortAccountId(uid: String): String {
     val trimmed = uid.trim()
     // 8 位以内本来就是短标识（如 "8985"、"NK1575975"），原样显示
     return if (trimmed.length <= 16) {
