@@ -124,9 +124,13 @@ class AutoCheckinScheduler(
     }
 
     /**
-     * 当前是否处于失败退避窗口。
+     * 当前是否处于失败退避窗口，或当日机会已用尽。
      *
-     * 跨天（上海自然日变化）自动清零：新的一天要从头再来。
+     * 跨天（自然日变化）自动清零：新的一天要从头再来。
+     *
+     * 语义说明：[RETRY_BACKOFF_MINUTES] 的每一项是「**第 N 次失败后**要等多久」。
+     * 用尽全部机会后（failCount > 表长）当日不再自动重试——但仍可手动点，
+     * 且跨天自然恢复。这不是「永久锁死」，只是当天不再骚扰上游。
      */
     private fun inBackoff(): Boolean {
         val day = AutoCheckinPrefs.dayKeyOf(nowMillis())
@@ -137,7 +141,8 @@ class AutoCheckinScheduler(
             return false
         }
         if (failCount <= 0 || lastFailAt <= 0L) return false
-        if (failCount > RETRY_BACKOFF_MINUTES.size) return true // 当日次数用尽
+        // 当日机会用尽：不再自动重试（手动仍可，跨天恢复）
+        if (failCount > RETRY_BACKOFF_MINUTES.size) return true
         val waitMs = RETRY_BACKOFF_MINUTES[failCount - 1] * 60_000L
         return nowMillis() - lastFailAt < waitMs
     }

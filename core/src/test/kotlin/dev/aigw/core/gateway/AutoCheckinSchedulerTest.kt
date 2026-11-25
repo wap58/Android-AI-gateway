@@ -38,7 +38,26 @@ class AutoCheckinSchedulerTest {
         override fun keys(prefix: String): List<String> = map.keys.filter { it.startsWith(prefix) }
     }
 
-    private val t0 = 1_764_000_000_000L // 2025-11-25 附近，只用于固定时间推进
+    /**
+     * 测试用的时间锚点：**本地时区**的某天 00:10。
+     *
+     * ★ 不能写成固定毫秒值：`AutoCheckinPrefs.dayKeyOf` 用默认时区切自然日，
+     *   而 CI 跑 UTC、本地跑 CST(+8)，同一个绝对时刻在两边属于不同的「天」。
+     *   用 Calendar 按本地时区构造，保证「锚点 + 若干小时」始终落在同一个自然日里，
+     *   测试结果才不会随运行环境变化（第一版就踩了这个坑，本地过、CI 红）。
+     */
+    private fun localAnchor(hour: Int = 0, minute: Int = 10): Long =
+        java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.YEAR, 2026)
+            set(java.util.Calendar.MONTH, java.util.Calendar.NOVEMBER)
+            set(java.util.Calendar.DAY_OF_MONTH, 15)
+            set(java.util.Calendar.HOUR_OF_DAY, hour)
+            set(java.util.Calendar.MINUTE, minute)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+
+    private val t0: Long = localAnchor()
 
     /** 可手动推进的时钟。 */
     private class Clock(var now: Long) {
@@ -186,13 +205,27 @@ class AutoCheckinSchedulerTest {
         val s = scheduler(prefs, clock, done = { false }, onRun = { runs++; false })
 
         clock.advanceMinutes(6)
-        // 每次都给足退避时间，跑满所有机会
+        // 每次都给足最长的退避时间（70 分钟 > 60 分钟），把当日机会跑完
         repeat(10) {
             s.tick()
             clock.advanceMinutes(70)
         }
-        // 退避表有 4 档，首次 + 4 次重试 ≈ 5 次以内
-        assertTrue(runs <= 5, "当日重试次数必须有上限，当前 $runs 次")
-        assertTrue(runs >= 1)
+
+        // 退避表 5/15/30/60 共 4 档：首次执行 + 4 次重试 = 5 次，之后当日停手。
+        // 这条断言是**精确**的，不留浮动区间——浮动区间会掩盖退避表被改动。
+        assertEquals(5, runs, "当日应恰好尝试 5 次（1 次首跑 + 4 次退避重试）后停手")
+    }
+
+    @Test
+    fun `天然时区锚点保证测试不随运行环境变化`() {
+        // 这条锁住「用 Calendar 按本地时区构造时刻」这个前提：
+        // 若有人改回硬编码毫秒值，UTC 与 CST 的跨日点不同，上面几条会随机变红。
+        val a = localAnchor(hour = 0, minute = 10)
+        val b = localAnchor(hour = 23, minute = 50)
+        assertEquals(
+            AutoCheckinPrefs.dayKeyOf(a),
+            AutoCheckinPrefs.dayKeyOf(b),
+            "同一本地自然日内的两个时刻必须属于同一天键",
+        )
     }
 }
