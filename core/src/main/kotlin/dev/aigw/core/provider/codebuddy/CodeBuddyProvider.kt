@@ -283,6 +283,25 @@ class CodeBuddyProvider(
                 if (!result.ok || credential == null) return result
                 val extra = ArrayList<String>()
                 val streak = runCatching { activeReport(credential, extra) }.getOrNull()
+
+                // ★★ 用「今天活跃格亮没亮」做最终裁决。
+                //
+                //   `daily-checkin` 回「今日已签到」时存在歧义：日期刚翻、上游还没重置
+                //   时它指的是**昨天**。若据此报成功，调度器会把今天记成已完成、全天
+                //   不再重试，用户就得每天手动补一次（2026-11-28 的真实故障）。
+                //
+                //   活跃格记的是**具体日期**，没有歧义。今天没亮就说明确实没签上，
+                //   必须报失败让调度器继续按退避重试——哪怕签到接口说自己成功了。
+                //   查不到判据（null）时保持原判定，不因诊断接口失败而误报失败。
+                val lit = runCatching { todayCellLit(credential) }.getOrNull()
+                if (lit == false) {
+                    extra.add("今日活跃格未点亮，判定为未签到成功，稍后重试")
+                    hooks.onLog("CodeBuddy 签到返回成功但今日活跃格未点亮（疑似上游未重置）")
+                    return ProviderActionResult.failure(
+                        (result.message + "；" + extra.joinToString("；")).trim('；'),
+                    )
+                }
+
                 if (extra.isEmpty()) return result
                 return result.copy(
                     message = result.message + "；" + extra.joinToString("；"),
@@ -391,6 +410,41 @@ class CodeBuddyProvider(
             parts.add("活跃上报失败：" + (e.message ?: e.javaClass.simpleName))
             null
         }
+    }
+
+    /**
+     * 今天的活跃格是否已经点亮（**唯一**可靠的「今天签到了吗」判据）。
+     *
+     * ★ 为什么不能只看签到接口的返回
+     *
+     * 日期刚翻、上游还没重置时，`daily-checkin` 会回「今日已签到」——但那指的是昨天。
+     * 光看这句话无法区分，误判的代价是全天不再重试、用户必须每天手动补
+     * （2026-11-28 实测故障：streak 每天涨，但每天都要手动签）。
+     *
+     * 活跃格不一样：它记录的是**具体某个日期**有没有活动。今天的格子亮没亮，
+     * 是服务端对「今天」的真实记账，没有歧义。
+     *
+     * 返回三态：
+     *  - true  今天已点亮（含着昨天补签回来）
+     *  - false 今天确实还没点亮
+     *  - null  查不到判据（接口失败/没有今日格），调用方应保持原判定、不要据此报错
+     */
+    private fun todayCellLit(credential: Credential): Boolean? {
+        val base = chatBase(credential)
+        val headers = billingHeaders(credential)
+        val (hs, hb) = getJson("$base/activity/growth/heatmap", headers)
+        if (hs !in 200..299) return null
+        val obj = jsonOf(hb)?.let { dataOrRoot(it) } ?: return null
+        val cells = obj.getAsJsonArray("cells") ?: return null
+        val today = shanghaiDateKey(nowMillis())
+        for (el in cells) {
+            val o = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val ds = o.str("date").take(10)
+            if (ds != today) continue
+            val score = o.longOrNull("score") ?: 0L
+            return score > 0L
+        }
+        return null
     }
 
     /** 活跃上报的日锁：key = uid，value = 已上报的上海日期。 */
@@ -1184,6 +1238,17 @@ class CodeBuddyProvider(
             val message = extractMessage(text)
             // ★「今天已签到」上游用 HTTP 400 + code 10001 返回，属于正常状态，不能算失败。
             //   必须在状态码判断**之前**识别，否则今天第二次点签到就必然报错。
+            //
+            //   ★★ 但「已签到」有歧义：日期刚翻过、上游还没重置时，它指的是**昨天**。
+            //   光看这句话无法区分。区别在于后果——如果误判成「今天已完成」，
+            //   全天不会再重试，用户就得每天手动补一次（2026-11-28 的真实故障）。
+            //   症状：活跃格看着是亮的（手动那次点亮），但自动签到从没成功过。
+            //
+            //   不过这里**不改返回语义**：签到接口本身确实没签成，属于幂等成功。
+            //   真正能区分「今天到底签没签」的唯一可靠判据是回读 activeReport 里的
+            //   streak.days 是否已经包含今天。这由调用方（ACTION_CHECKIN 分支）
+            //   在 activeReport 里完成：只要今天没点亮，streak 就不会计入今天，
+            //   调度器会按退避继续重试，直到真正签上。
             if (message.contains("已签到") || message.contains("already")) {
                 return ProviderActionResult.success("今日已签到")
             }

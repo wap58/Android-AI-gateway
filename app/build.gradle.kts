@@ -45,8 +45,9 @@ android {
         // versionName 末位仍带 versionCode，保证「只升 code」也能被更新检测识别。
         // 1.1.0：悬浮底栏、请求改写、AutoClaw 刷新域名修复、记录页胶囊修复、网关行为设置
         // 1.1.1：修自动签到日锁 scope 错配（每分钟重复签到）+ 弱网失败退避；活跃地图点亮
-        versionCode = 216
-        versionName = "1.1.1"
+        // 1.1.2：自动签到不低于 06:00（凌晨上游未重置，「今日已签到」会指昨天，被误记成今天完成）
+        versionCode = 217
+        versionName = "1.1.2"
     }
 
     buildFeatures {

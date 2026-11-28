@@ -39,14 +39,17 @@ class AutoCheckinSchedulerTest {
     }
 
     /**
-     * 测试用的时间锚点：**本地时区**的某天 00:10。
+     * 测试用的时间锚点：**本地时区**的某天 06:10（已进入签到窗口）。
      *
      * ★ 不能写成固定毫秒值：`AutoCheckinPrefs.dayKeyOf` 用默认时区切自然日，
      *   而 CI 跑 UTC、本地跑 CST(+8)，同一个绝对时刻在两边属于不同的「天」。
      *   用 Calendar 按本地时区构造，保证「锚点 + 若干小时」始终落在同一个自然日里，
      *   测试结果才不会随运行环境变化（第一版就踩了这个坑，本地过、CI 红）。
+     *
+     * ★ 也不能用 0 点：1.1.2 起调度器有「不早于 06:00」的窗口限制
+     *   （凌晨上游状态未重置，「今日已签到」会指向昨天）。
      */
-    private fun localAnchor(hour: Int = 0, minute: Int = 10): Long =
+    private fun localAnchor(hour: Int = 6, minute: Int = 10): Long =
         java.util.Calendar.getInstance().apply {
             set(java.util.Calendar.YEAR, 2026)
             set(java.util.Calendar.MONTH, java.util.Calendar.NOVEMBER)
@@ -227,5 +230,46 @@ class AutoCheckinSchedulerTest {
             AutoCheckinPrefs.dayKeyOf(b),
             "同一本地自然日内的两个时刻必须属于同一天键",
         )
+    }
+
+    @Test
+    fun `凌晨不签到——上游状态还没重置`() {
+        // 2026-11-28 的真实故障：00:01 去签，WorkBuddy 回「今日已签到」（指的是昨天），
+        // 被当成功写进今天的日锁 → 全天不再重试 → 用户每天醒来手动补一次。
+        val store = MemoryStore()
+        val prefs = AutoCheckinPrefs(store)
+        val clock = Clock(localAnchor(hour = 0, minute = 1))
+        var runs = 0
+        val s = scheduler(prefs, clock, done = { false }, onRun = { runs++; true })
+
+        // 00:01 起每分钟检查，直到 05:59 都不该执行
+        // 注意循环次数：00:01 + 359 分钟 = 06:00，正好会进入窗口。
+        // 所以只检查到 05:59（358 次推进），第 359 次就跨进 6 点了。
+        repeat(359) {
+            s.tick()
+            clock.advanceMinutes(1)
+        }
+        assertEquals(0, runs, "06:00 之前一律不签到，否则会撞上未重置的上游状态")
+
+        // 此刻时钟正好 06:00，应立即允许
+        s.tick()
+        assertEquals(1, runs, "过了 06:00 应该立刻签")
+    }
+
+    @Test
+    fun `已签完后凌晨重启也不会重跑`() {
+        val store = MemoryStore()
+        val prefs = AutoCheckinPrefs(store)
+        prefs.markChecked(localAnchor(hour = 8), startHour = 0, scope = "codebuddy")
+        val clock = Clock(localAnchor(hour = 0, minute = 30))
+        var runs = 0
+        // 模拟「今天已签完」的宿主判定
+        val s = scheduler(prefs, clock, done = { true }, onRun = { runs++; true })
+
+        repeat(60) {
+            s.tick()
+            clock.advanceMinutes(10)
+        }
+        assertEquals(0, runs, "已签完就绝不重跑（这条与时间窗口无关）")
     }
 }

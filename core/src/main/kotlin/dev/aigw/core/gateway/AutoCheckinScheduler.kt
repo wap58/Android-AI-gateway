@@ -94,13 +94,15 @@ class AutoCheckinScheduler(
         )
     }
 
-    /** 每分钟的检查：过了延迟 + 今天没签完 + 不在退避窗口 → 执行。 */
+    /** 每分钟的检查：过了延迟 + 到了执行窗口 + 今天没签完 + 不在退避窗口 → 执行。 */
     internal fun tick() {
         if (!prefs.enabled()) return
         // 今天已经全部签完，不用再跑
         if (runCatching { isDoneToday() }.getOrDefault(false)) return
         // 启动后还没到延迟时间
         if (nowMillis() - bootAt < DELAY_MINUTES * 60_000L) return
+        // ★ 还没到当天的执行窗口（见 NOT_BEFORE_HOUR 的说明）
+        if (!inDailyWindow()) return
         // 失败退避：连续失败时拉长间隔，避免每分钟重试轰炸上游
         if (inBackoff()) return
         // 上一轮还没跑完
@@ -121,6 +123,29 @@ class AutoCheckinScheduler(
         } finally {
             running.set(false)
         }
+    }
+
+    /**
+     * 当前是否已进入当天的签到窗口。
+     *
+     * ★ 为什么要卡一个「不早于 NOT_BEFORE_HOUR」的下限
+     *
+     * 各站服务端的「今日」状态重置时刻并不都在 0 点整。实测 WorkBuddy 在
+     * 00:01 去签到会被回「今日已签到」——但那句话指的是**昨天**（日期刚翻，
+     * 服务端还没重置）。而 [dev.aigw.core.provider.codebuddy.CodeBuddyProvider]
+     * 的 `checkin()` 把「已签到」一律当成功，于是这条假信号被
+     * `performActionAll` 写进了**今天**的日锁，全天判定为已完成、再也不重试。
+     *
+     * 表现就是用户每天醒来都要手动补一次，而活跃格看着又是亮的
+     * （手动那次点亮了）。2026-11-28 定位。
+     *
+     * 06:00 是个保守值：此时所有站的重置都已完成，签到一定是「真·今天」。
+     * 代价是凌晨不签到——但凌晨签到本来就没有意义（用户都睡了，早签晚签
+     * 奖励一致），换来的是「醒来即已签好」这个确定行为。
+     */
+    private fun inDailyWindow(): Boolean {
+        val cal = java.util.Calendar.getInstance().apply { timeInMillis = nowMillis() }
+        return cal.get(java.util.Calendar.HOUR_OF_DAY) >= NOT_BEFORE_HOUR
     }
 
     /**
@@ -179,6 +204,15 @@ class AutoCheckinScheduler(
 
         /** 轮询间隔：每分钟检查一次，精度够用、开销可忽略。 */
         const val TICK_SECONDS = 60L
+
+        /**
+         * 当天最早几点开始自动签到。
+         *
+         * 见 [inDailyWindow] 的说明：早于这个时刻，上游的「今日」状态可能还没重置，
+         * 「今日已签到」会指向昨天，被误记成今天完成、全天不再重试。
+         * 06:00 是所有站都已完成重置的保守时刻。
+         */
+        const val NOT_BEFORE_HOUR = 6
 
         /**
          * 失败后的重试间隔（分钟），按连续失败次数取。
